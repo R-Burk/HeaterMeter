@@ -98,7 +98,7 @@ public:
   void calcTemp(unsigned int _accumulator);
   // Perform once-per-period processing
   void processPeriod(void);
-  
+
   ProbeAlarm Alarms;
 };
 
@@ -126,7 +126,7 @@ public:
 // Try to output a constant voltage instead of PWM
 #define PIDFLAG_FAN_FEEDVOLT  4
 // PID control only on servo. Fan is ganged to servo endpoints
-#define PIDFLAG_FAN_GANGED    5
+#define PIDFLAG_FAN_BY_SERVO    5
 
 // pitStartRecover constants
 // STARTUP - Attempting to reach temperature for the first time
@@ -153,10 +153,10 @@ private:
   unsigned char _pidOutput;
   float _deriv[4]; // tracking values for Derivative formula
   unsigned long _lastWorkMillis;
-#if defined(GRILLPID_GANG_ENABLED)
+#if defined(GRILLPID_FAN_BY_SERVO)
   unsigned long _lastFanMillis;
-  unsigned char _lastFanSpeed;
-#endif /* GRILLPID_GANG_ENABLED */
+	unsigned char _lastFanSpeed;
+#endif /* GRILLPID_FAN_BY_SERVO */
   unsigned char _pitStartRecover;
   int _setPoint;
   boolean _manualOutputMode;
@@ -177,10 +177,7 @@ private:
   // Current fan speed (percent)
   unsigned char _fanSpeed;
   // Feedback switching mode voltage controller
-#if defined(FAN_PWM_FRACTION)
-  unsigned char _feedvoltOutputFrac;
-#endif /* FAN_PWM_FRACTION */
-  unsigned char _feedvoltLastOutput;
+  signed int _feedvoltLastOutput;
   // Desired fan target (0-255)
   unsigned char _lastBlowerOutput;
   // Target servo position (ticks)
@@ -191,9 +188,7 @@ private:
   void commitFanOutput(void);
   void commitServoOutput(void);
   void commitPidOutput(void);
-#if defined(FAN_PWM_FRACTION)
-  void fanVoltWrite(void);
-#endif /* FAN_PWM_FRACTION */
+  void fanVoltWrite(unsigned char val);
   void adjustFeedbackVoltage(void);
 public:
   GrillPid(void) : _periodCounter(0x80), _units('F') {};
@@ -267,7 +262,7 @@ public:
   // true if temperature was >= setpoint since last set / lid event
   boolean isPitTempReached(void) const { return _pitStartRecover == PIDSTARTRECOVER_NORMAL; }
   unsigned char getPitStartRecover(void) const { return _pitStartRecover; }
-  
+
   // Call this in loop()
   boolean doWork(void);
   void resetLidOpenResumeCountdown(void);

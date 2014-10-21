@@ -58,9 +58,12 @@ static const struct __eeprom_data {
   float pidConstants[4]; // constants are stored Kb, Kp, Ki, Kd
   boolean manualMode;
   unsigned char lcdBacklight; // in PWM (max 100)
-#ifdef HEATERMETER_RFM12
+  /* Need to rethink this. If you disable RMF12 then on a reflash the eeprom data no longer matches
+		 Possibly put at the end of the structure so it gets truncated?
+  */
+//#ifdef HEATERMETER_RFM12
   unsigned char rfMap[TEMP_COUNT];
-#endif
+//#endif
   char pidUnits;
   unsigned char minFanSpeed;  // in percent
   unsigned char maxFanSpeed;  // in percent
@@ -88,7 +91,7 @@ static const struct __eeprom_data {
   'F',  // Units
   0,    // min fan speed
   100,  // max fan speed
-  bit(PIDFLAG_FAN_FEEDVOLT)|bit(PIDFLAG_FAN_GANGED), // PID output flags bitmask
+  bit(PIDFLAG_FAN_FEEDVOLT)|bit(PIDFLAG_FAN_BY_SERVO), // PID output flags bitmask
   0xff, // 2-line home
   100, // max startup fan speed
   { LEDSTIMULUS_FanMax, LEDSTIMULUS_LidOpen, LEDSTIMULUS_FanOn, LEDSTIMULUS_Off },
@@ -274,6 +277,7 @@ static void storeProbeTypeOrMap(unsigned char probeIndex, unsigned char probeTyp
 
 static void storeMinFanSpeed(unsigned char minFanSpeed)
 {
+  minFanSpeed = constrain(minFanSpeed, 0, 100);
   pid.setMinFanSpeed(minFanSpeed);
   config_store_byte(minFanSpeed, pid.getMinFanSpeed());
 }
@@ -879,7 +883,7 @@ static void storeFanParams(unsigned char idx, int val)
       break;
     case 5:
       storeMaxStartupFanSpeed(val);
-      break;
+    break;
   }
 }
 
