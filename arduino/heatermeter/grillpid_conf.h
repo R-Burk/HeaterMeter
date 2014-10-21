@@ -7,7 +7,7 @@
 //#define GRILLPID_FEEDVOLT_DEBUG
 #define ADC_ROUND
 #define GRILLPID_FAN_BY_SERVO
-#define ROB_OUTPUT_HACK
+//#define ROB_OUTPUT_HACK
 
 #define TEMP_PIT    0
 #define TEMP_FOOD1  1
