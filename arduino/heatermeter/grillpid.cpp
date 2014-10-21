@@ -25,11 +25,6 @@ extern const GrillPid pid;
 
 #if defined(GRILLPID_SERVO_ENABLED)
 
-#if defined(SERVO_CHATTER_DEBUG)
-  volatile unsigned int servoOn;
-  volatile unsigned int servoOff;
-#endif /* SERVO_CHATTER_DEBUG */
-
 ISR(TIMER1_CAPT_vect)
 {
   unsigned int cnt = OCR1B;
@@ -39,18 +34,12 @@ ISR(TIMER1_CAPT_vect)
     digitalWriteFast(PIN_SERVO, HIGH);
     cnt = TCNT1;
     OCR1B = cnt + pid.getServoTarget();
-#if defined(SERVO_CHATTER_DEBUG)
-    servoOn = cnt;
-#endif /* SERVO_CHATTER_DEBUG */
   }
 }
 
 ISR(TIMER1_COMPB_vect)
 {
   digitalWriteFast(PIN_SERVO, LOW);
-#if defined(SERVO_CHATTER_DEBUG)
-  servoOff = TCNT1;
-#endif /* SERVO_CHATTER_DEBUG */
 }
 #endif
 
@@ -464,15 +453,15 @@ inline void GrillPid::calcPidOutput(void)
     _deriv[DRV_FILT] = currentTemp;
     _deriv[DRV_PRV1] = _deriv[DRV_PRV2] = _deriv[DRV_PRV3] = 0;
   }
-	_pidCurrent[PIDD] = (Probes[TEMP_PIT]->TemperatureAvg - _deriv[DRV_FILT]);
-	float secondDrv = _pidCurrent[PIDD] - _deriv[DRV_PRV3];
-	secondDrv /= 4; // Average derivative change over last 4 seconds
-	//Save value
-	_deriv[DRV_PRV3] = _deriv[DRV_PRV2];
-	_deriv[DRV_PRV2] = _deriv[DRV_PRV1];
-	_deriv[DRV_PRV1] = _pidCurrent[PIDD];
-	// Add in the calculated second order derivative. Attempt to reduce the lag created by making derivative filter
-	_pidCurrent[PIDD] += secondDrv;
+  _pidCurrent[PIDD] = (Probes[TEMP_PIT]->TemperatureAvg - _deriv[DRV_FILT]);
+  float secondDrv = _pidCurrent[PIDD] - _deriv[DRV_PRV3];
+  secondDrv /= 4; // Average derivative change over last 4 seconds
+  //Save value
+  _deriv[DRV_PRV3] = _deriv[DRV_PRV2];
+  _deriv[DRV_PRV2] = _deriv[DRV_PRV1];
+  _deriv[DRV_PRV1] = _pidCurrent[PIDD];
+  // Add in the calculated second order derivative. Attempt to reduce the lag created by making derivative filter
+  _pidCurrent[PIDD] += secondDrv;
   _pidCurrent[PIDD] = Pid[PIDD] * _pidCurrent[PIDD];
 
   // BBBBB = fan speed percent
@@ -495,8 +484,8 @@ inline void GrillPid::calcPidOutput(void)
   else {
 	// Additional check to see if we way over saturated. Keeps integrator from bouncing off the control limits
 	if ( (control - (int)_pidOutput) * sat > 2 )
-	  //Integral Anti-windup will slowly bring the integral back to 0 as long as the control is saturated
-	  _pidCurrent[PIDI] = (1- (Pid[PIDI]*10)) * _pidCurrent[PIDI];
+      //Integral Anti-windup will slowly bring the integral back to 0 as long as the control is saturated
+      _pidCurrent[PIDI] = (1- (Pid[PIDI]*10)) * _pidCurrent[PIDI];
   }
 }
 
@@ -510,17 +499,21 @@ void GrillPid::fanVoltWrite(unsigned char val)
     return;
   }
 
-  // Make sure pin is connected to PWM timer 2 channel B
-  TCCR2A |= bit(COM2B1);
-  //Set duty cycle for Timer2B that is controlling the fan SMPS
-  //Note this is actually off by 1 in fast PWM
-  //so real range is (0-255)+1/256 or 1/256 to 256/256
-  OCR2B = val;
-}
+  // Only chance to read max input voltage to board
+  if (OCR2B == 255) {
+    _inputVoltage = analogReadOver(APIN_FFEEDBACK,8);
+    SerialX.print("HMLG,");
+    SerialX.print("VOLT: input="); SerialX.print(_inputVoltage, DEC);
+    Serial_nl();
+  }
 
-#if defined(SERVO_CHATTER_DEBUG)
-static unsigned int _prevPulse;
-#endif
+  // Make sure pin is connected to PWM timer 2 channel B
+   TCCR2A |= bit(COM2B1);
+   //Set duty cycle for Timer2B that is controlling the fan SMPS
+   //Note this is actually off by 1 in fast PWM
+   //so real range is (0-255)+1/256 or 1/256 to 256/256
+   OCR2B = val;
+}
 
 void GrillPid::adjustFeedbackVoltage(void)
 {
@@ -554,26 +547,6 @@ void GrillPid::adjustFeedbackVoltage(void)
     SerialX.print(" ffeed="); SerialX.print(ffeedback, DEC);
     SerialX.print(" out="); SerialX.print(_feedvoltLastOutput/128, DEC); 
     SerialX.print("."); SerialX.print(_feedvoltLastOutput & 127,DEC);
-    Serial_nl();
-#endif
-
-#if defined(SERVO_CHATTER_DEBUG)
-    unsigned int onCount;
-    unsigned int offCount;
-
-    ATOMIC_BLOCK(ATOMIC_FORCEON){
-      onCount = servoOn;
-      offCount = servoOff;
-    }
-    unsigned int pulse = offCount - onCount;
-    signed int offset = pulse - _prevPulse;
-    _prevPulse = pulse;
-
-    SerialX.print("HMLG,");
-    SerialX.print("ISR: on="); SerialX.print(onCount, DEC);
-    SerialX.print(" off="); SerialX.print(offCount, DEC);
-    SerialX.print(" len="); SerialX.print(pulse, DEC);
-    SerialX.print(" offset="); SerialX.print(offset, DEC);
     Serial_nl();
 #endif
 
@@ -622,36 +595,36 @@ inline void GrillPid::commitFanOutput(void)
       boolean madeSpeedShift = false;
 	    unsigned long elapsed = millis() - _lastFanMillis;
 	    if (elapsed > FAN_GANG_PERIOD ) {
-			  if ( (_pidOutput > FAN_GANG_UPSHIFT) ) {
-				  if  (_lastFanSpeed < 100) {
-				    _lastFanSpeed += FAN_GANG_SHIFT;
-                    madeSpeedShift = true;
-				    // Knock the integrator back down as we are going to push more air
-				    _pidCurrent[PIDI] = _pidCurrent[PIDI] - 5.0;
-				  }
-			  }
-			  if ( _pidOutput < FAN_GANG_DNSHIFT ) {
-                //Jump to 0 if servo has went to 0
-				if ( _pidOutput == 0 ) { 
-			      _lastFanSpeed = 0;
-				}
-				if ( _lastFanSpeed > FAN_GANG_SHIFT ) {
-				  _lastFanSpeed -= FAN_GANG_SHIFT;
-                  madeSpeedShift = true;
-				  // Give the integrator a bit more as we reduced airflow
-				  _pidCurrent[PIDI] = _pidCurrent[PIDI] + 5.0;
-				}
-			  }
-			  constrain(_lastFanSpeed,0,100);
-			  /* Check if we actually did anything and if so then update to lock out
-				   for FAN_GANG_PERIOD
-			  */
-			  if ( madeSpeedShift ) {
-				_lastFanMillis = millis();
-			  }
-		  }
-		  _fanSpeed = (unsigned int)_lastFanSpeed * max / 100;
-	  }
+		  if ( (_pidOutput > FAN_GANG_UPSHIFT) ) {
+            if  (_lastFanSpeed < 100 ) {
+			  _lastFanSpeed += FAN_GANG_SHIFT;
+              madeSpeedShift = true;
+              // Knock the integrator back down as we are going to push more air
+              _pidCurrent[PIDI] = _pidCurrent[PIDI] - 5.0;
+            }
+          }
+          if ( _pidOutput < FAN_GANG_DNSHIFT ) {
+            //Jump to 0 if servo has went to 0
+            if ( _pidOutput == 0 ) { 
+              _lastFanSpeed = 0;
+            }
+            if ( _lastFanSpeed > FAN_GANG_SHIFT ) {
+              _lastFanSpeed -= FAN_GANG_SHIFT;
+              madeSpeedShift = true;
+              // Give the integrator a bit more as we reduced airflow
+              _pidCurrent[PIDI] = _pidCurrent[PIDI] + 5.0;
+            }
+          }
+          constrain(_lastFanSpeed,0,100);
+          /* Check if we actually did anything and if so then update to lock out
+             for FAN_GANG_PERIOD
+          */
+          if ( madeSpeedShift ) {
+            _lastFanMillis = millis();
+          }
+		}
+      _fanSpeed = (unsigned int)_lastFanSpeed * max / 100;
+	}
     else {
 #endif /* GRILLPID_FAN_BY_SERVO */
     _fanSpeed = (unsigned int)_pidOutput * max / 100;
@@ -661,8 +634,8 @@ inline void GrillPid::commitFanOutput(void)
   }
 
 #if defined(ROB_OUTPUT_HACK)
-      // Simply to show on web page
-      Probes[TEMP_AMB]->Temperature = _fanSpeed;
+  // Simply to show on web page
+  Probes[TEMP_AMB]->Temperature = _fanSpeed;
 #endif /* ROB_OUTPUT_HACK */
 
   /* For anything above _minFanSpeed, do a nomal PWM write.
@@ -694,6 +667,9 @@ inline void GrillPid::commitFanOutput(void)
   {
     bool needBoost = _lastBlowerOutput == 0;
     if (bit_is_set(_outputFlags, PIDFLAG_FAN_FEEDVOLT))
+      if (_inputVoltage)
+        _lastBlowerOutput = mappct(_fanSpeed, FeedvoltToAdc(5.0f), _inputVoltage);
+      else
       _lastBlowerOutput = mappct(_fanSpeed, FeedvoltToAdc(5.0f), FeedvoltToAdc(12.1f));
     else
       _lastBlowerOutput = mappct(_fanSpeed, 0, 255);

@@ -178,6 +178,8 @@ private:
   unsigned char _fanSpeed;
   // Feedback switching mode voltage controller
   signed int _feedvoltLastOutput;
+  // Measured input voltage
+  unsigned char _inputVoltage;
   // Desired fan target (0-255)
   unsigned char _lastBlowerOutput;
   // Target servo position (ticks)
