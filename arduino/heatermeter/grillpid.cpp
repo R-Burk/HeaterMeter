@@ -50,7 +50,7 @@ static struct tagAdcState
   unsigned char discard;  // Discard this many ADC readings
   unsigned int thisHigh;  // High this period
   unsigned int thisLow;   // Low this period
-  unsigned int analogReads[NUM_ANALOG_INPUTS]; // Current values
+  unsigned long analogReads[NUM_ANALOG_INPUTS]; // Current values
   unsigned int analogRange[NUM_ANALOG_INPUTS]; // high-low on last period
 #if defined(GRILLPID_DYNAMIC_RANGE)
   bool useBandgapReference[NUM_ANALOG_INPUTS]; // Use 1.1V reference instead of AVCC
@@ -102,11 +102,7 @@ ISR(ADC_vect)
     else
 #endif // GRILLPID_DYNAMIC_RANGE
     {
-#if defined(ADC_ROUND)
-      // round off to bring error to 1/2 LSB instead of 1 LSB
-      adcState.accumulator += (1 << (8 - TEMP_OVERSAMPLE_BITS-1)-1);
-#endif
-      adcState.analogReads[pin] = adcState.accumulator >> (8 - TEMP_OVERSAMPLE_BITS);
+      adcState.analogReads[pin] = adcState.accumulator;
       adcState.analogRange[pin] = adcState.thisHigh - adcState.thisLow;
     }
     adcState.thisHigh = 0;
@@ -137,22 +133,29 @@ ISR(ADC_vect)
 unsigned int analogReadOver(unsigned char pin, unsigned char bits)
 {
   unsigned int retVal;
+  unsigned long accum;
+  unsigned char shift;
 
   ATOMIC_BLOCK(ATOMIC_FORCEON)
   {
-    retVal = adcState.analogReads[pin];
+    accum = adcState.analogReads[pin];
   }
-  // Calc 1/2 LSB of the bits we are dropping and add back to round
+  //Verify that we also return to more than max correct oversampled value
+  if (bits > (10 + TEMP_OVERSAMPLE_BITS) )
+    shift = TEMP_OVERSAMPLE_BITS;
+  else
+    shift = (18 - bits);
 #if defined(ADC_ROUND)
-  unsigned int round = (10 + TEMP_OVERSAMPLE_BITS - bits);
-  if (round > 1 )
-  {
-    round = 1 << (10 + TEMP_OVERSAMPLE_BITS - bits - 1);
+  // Calc 1/2 LSB of the oversampled bits we are dropping and add back to round
+  // Verify we aren't completely maxed, this is 10 bit ADC -1 X # of samples in ISR
+  if ( accum < (1022*256) && (shift <= TEMP_OVERSAMPLE_BITS)) {
+    unsigned long round = 1 << (shift - 1);
     round--;
-    retVal += round;
+    accum += round;
   }
 #endif /* ADC_ROUND */
-  return (retVal >> (10 + TEMP_OVERSAMPLE_BITS - bits));
+  retVal = (unsigned int)(accum >> shift);
+  return retVal;
 }
 
 unsigned int analogReadRange(unsigned char pin)
