@@ -50,7 +50,7 @@ static struct tagAdcState
   unsigned char discard;  // Discard this many ADC readings
   unsigned int thisHigh;  // High this period
   unsigned int thisLow;   // Low this period
-  unsigned long analogReads[NUM_ANALOG_INPUTS]; // Current values
+  unsigned int analogReads[NUM_ANALOG_INPUTS]; // Current values
   unsigned int analogRange[NUM_ANALOG_INPUTS]; // high-low on last period
 #if defined(GRILLPID_DYNAMIC_RANGE)
   bool useBandgapReference[NUM_ANALOG_INPUTS]; // Use 1.1V reference instead of AVCC
@@ -102,7 +102,7 @@ ISR(ADC_vect)
     else
 #endif // GRILLPID_DYNAMIC_RANGE
     {
-      adcState.analogReads[pin] = adcState.accumulator;
+      adcState.analogReads[pin] = adcState.accumulator >> 4;
       adcState.analogRange[pin] = adcState.thisHigh - adcState.thisLow;
     }
     adcState.thisHigh = 0;
@@ -133,29 +133,12 @@ ISR(ADC_vect)
 unsigned int analogReadOver(unsigned char pin, unsigned char bits)
 {
   unsigned int retVal;
-  unsigned long accum;
-  unsigned char shift;
 
   ATOMIC_BLOCK(ATOMIC_FORCEON)
   {
-    accum = adcState.analogReads[pin];
+    retVal = adcState.analogReads[pin];
   }
-  //Verify that we also return to more than max correct oversampled value
-  if (bits > (10 + TEMP_OVERSAMPLE_BITS) )
-    shift = TEMP_OVERSAMPLE_BITS;
-  else
-    shift = (18 - bits);
-#if defined(ADC_ROUND)
-  // Calc 1/2 LSB of the oversampled bits we are dropping and add back to round
-  // Verify we aren't completely maxed, this is 10 bit ADC -1 X # of samples in ISR
-  if ( accum < (1022*256) && (shift <= TEMP_OVERSAMPLE_BITS)) {
-    unsigned long round = 1 << (shift - 1);
-    round--;
-    accum += round;
-  }
-#endif /* ADC_ROUND */
-  retVal = (unsigned int)(accum >> shift);
-  return retVal;
+  return retVal >> (14 - bits);
 }
 
 unsigned int analogReadRange(unsigned char pin)
@@ -488,7 +471,7 @@ inline void GrillPid::calcPidOutput(void)
 	// Additional check to see if we way over saturated. Keeps integrator from bouncing off the control limits
 	if ( (control - (int)_pidOutput) * sat > 2 )
       //Integral Anti-windup will slowly bring the integral back to 0 as long as the control is saturated
-      _pidCurrent[PIDI] = (1- (Pid[PIDI]*10)) * _pidCurrent[PIDI];
+      _pidCurrent[PIDI] = (1- Pid[PIDI]) * _pidCurrent[PIDI];
   }
 }
 
@@ -598,34 +581,36 @@ inline void GrillPid::commitFanOutput(void)
       boolean madeSpeedShift = false;
 	    unsigned long elapsed = millis() - _lastFanMillis;
 	    if (elapsed > FAN_GANG_PERIOD ) {
-		  if ( (_pidOutput > FAN_GANG_UPSHIFT) ) {
+        if ( _pidOutput > FAN_GANG_UPSHIFT ) {
+            // Upshift if less than 100
             if  (_lastFanSpeed < 100 ) {
-			  _lastFanSpeed += FAN_GANG_SHIFT;
+              _lastFanSpeed += FAN_GANG_SHIFT;
               madeSpeedShift = true;
               // Knock the integrator back down as we are going to push more air
-              _pidCurrent[PIDI] = _pidCurrent[PIDI] - 5.0;
+              _pidCurrent[PIDI] = _pidCurrent[PIDI] - max/(FAN_GANG_SHIFT*2);
             }
           }
-          if ( _pidOutput < FAN_GANG_DNSHIFT ) {
-            //Jump to 0 if servo has went to 0
-            if ( _pidOutput == 0 ) { 
-              _lastFanSpeed = 0;
-            }
-            if ( _lastFanSpeed > FAN_GANG_SHIFT ) {
-              _lastFanSpeed -= FAN_GANG_SHIFT;
-              madeSpeedShift = true;
-              // Give the integrator a bit more as we reduced airflow
-              _pidCurrent[PIDI] = _pidCurrent[PIDI] + 5.0;
-            }
+        if ( _pidOutput < FAN_GANG_DNSHIFT ) {
+          //Jump to 0 if servo has went to 0
+          if ( _pidOutput == 0 ) { 
+            _lastFanSpeed = 0;
           }
-          constrain(_lastFanSpeed,0,100);
-          /* Check if we actually did anything and if so then update to lock out
-             for FAN_GANG_PERIOD
-          */
-          if ( madeSpeedShift ) {
-            _lastFanMillis = millis();
+          // Downshift if more than 0
+          if ( _lastFanSpeed > 0 ) {
+            _lastFanSpeed -= FAN_GANG_SHIFT;
+            madeSpeedShift = true;
+            // Give the integrator a bit more as we reduced airflow
+            _pidCurrent[PIDI] = _pidCurrent[PIDI] + max/(FAN_GANG_SHIFT*2);
           }
-		}
+        }
+        constrain(_lastFanSpeed,0,100);
+        /* Check if we actually did anything and if so then update to lock out
+           for FAN_GANG_PERIOD
+        */
+        if ( madeSpeedShift ) {
+          _lastFanMillis = millis();
+        }
+		  }
       _fanSpeed = (unsigned int)_lastFanSpeed * max / 100;
 	}
     else {
@@ -783,7 +768,7 @@ void GrillPid::status(void) const
 		if ((Probes[i]->hasTemperature()) || (i == TEMP_AMB))
 #else
     if (Probes[i]->hasTemperature())
-#endif /* GRILLPID_FAN_BY_SERVO */
+#endif /* ROB_OUTPUT_HACK */
       SerialX.print(Probes[i]->Temperature, 1);
     else
       Serial_char('U');
@@ -880,6 +865,13 @@ void GrillPid::pidStatus(void) const
     }
 
     SerialX.print(pit->Temperature - pit->TemperatureAvg, 2);
+    //Added for additional rrd logging of PID params
+    for (unsigned char i=PIDP; i<=PIDD; ++i)
+    {
+      Serial_csv();
+      SerialX.print(Pid[i], 10);
+    }
+
     Serial_nl();
   }
 #endif
