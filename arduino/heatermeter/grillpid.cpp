@@ -409,6 +409,7 @@ unsigned int GrillPid::countOfType(unsigned char probeType) const
 /* Calucluate the desired output percentage using the proportional–integral-derivative (PID) controller algorithm */
 inline void GrillPid::calcPidOutput(void)
 {
+  unsigned char lastOutput = _pidOutput;
   _pidOutput = 0;
 
   // If the pit probe is registering 0 degrees, don't jack the fan up to MAX
