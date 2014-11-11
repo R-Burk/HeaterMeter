@@ -108,12 +108,6 @@ public:
 #define PIDI 2
 #define PIDD 3
 
-// Indexes into the _deriv array
-#define DRV_FILT 0
-#define DRV_PRV1 1
-#define DRV_PRV2 2
-#define DRV_PRV3 3
-
 // Indexes into outputFlags bitfield
 // Invert the fan PWM - pidOutput=100 would generate no PWM pulses
 #define PIDFLAG_INVERT_FAN    0
@@ -151,7 +145,7 @@ class GrillPid
 {
 private:
   unsigned char _pidOutput;
-  float _deriv[4]; // tracking values for Derivative formula
+  float _derivFilt; // derivative filter
   unsigned long _lastWorkMillis;
 #if defined(GRILLPID_FAN_BY_SERVO)
   unsigned long _lastFanMillis;

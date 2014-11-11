@@ -5,9 +5,7 @@
 #define GRILLPID_SERVO_ENABLED
 #define GRILLPID_DYNAMIC_RANGE
 //#define GRILLPID_FEEDVOLT_DEBUG
-#define ADC_ROUND
 #define GRILLPID_FAN_BY_SERVO
-//#define ROB_OUTPUT_HACK
 
 #define TEMP_PIT    0
 #define TEMP_FOOD1  1
@@ -24,22 +22,27 @@
 
 //Controls for FAN_BY_SERVO mode
 // Points at which fan while speed up or slow down
-#define FAN_GANG_DNSHIFT 30
-#define FAN_GANG_UPSHIFT 70
+#define FAN_GANG_DNSHIFT 50
+#define FAN_GANG_UPSHIFT 80
 // How much fan speed is changed each shift
 #define FAN_GANG_SHIFT   10
 // Min time period to wait between fan speed shifts
 #define FAN_GANG_PERIOD 30000
 
+// PID Controls
+// Error limit for Integrator during startup
+#define INTEGRAL_STARTUP_RATE 20
+// Needs to be low enough to allow derivative to function but to block huge changes ( like a lid opening )
+#define DERIV_FILTER_SMOOTH (1.0f/15.0f)
+
 // The time (ms) of the measurement period
 #define TEMP_MEASURE_PERIOD 1000
 // Number of times the ouput is adusted over TEMP_MEASURE_PERIOD
 // This affects fan boost mode and FFEEDBACK output
-#define TEMP_OUTADJUST_CNT 4
+#define TEMP_OUTADJUST_CNT 3
 // 2/(1+Number of samples used in the exponential moving average)
-#define DERIV_AVG_SMOOTH (2.0f/(1.0f+4.0f))
-#define TEMPPROBE_AVG_SMOOTH (2.0f/(1.0f+60.0f))
-#define PIDOUTPUT_AVG_SMOOTH (2.0f/(1.0f+240.0f))
+#define TEMPPROBE_AVG_SMOOTH (1.0f/60.0f)
+#define PIDOUTPUT_AVG_SMOOTH (2.0f/240.0f)
 // Once entering LID OPEN mode, the minimum number of seconds to stay in
 // LID OPEN mode before autoresuming due to temperature returning to setpoint
 #define LIDOPEN_MIN_AUTORESUME 30

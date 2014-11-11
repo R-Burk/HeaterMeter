@@ -21,8 +21,6 @@ extern const GrillPid pid;
 
 #define DIFFMAX(x,y,d) ((x - y + d) <= (d*2U))
 
-#define satlimit(orig,filt) ((orig)<(filt)?(-1):((orig)>(filt)?(1):(0)))
-
 #if defined(GRILLPID_SERVO_ENABLED)
 
 ISR(TIMER1_CAPT_vect)
@@ -422,57 +420,37 @@ inline void GrillPid::calcPidOutput(void)
     return;
 
   float currentTemp = Probes[TEMP_PIT]->Temperature;
-  float error;
-  error = _setPoint - currentTemp;
+  float error = _setPoint - currentTemp;
 
   // PPPPP = fan speed percent per degree of error
-  _pidCurrent[PIDP] = Pid[PIDP] * error;
-
- 
-  // DDDDD = fan speed percent per degree of change over TEMPPROBE_AVG_SMOOTH period
-  if ( _deriv[DRV_FILT] != 0 ) 
-  {
-    calcExpMovingAverage(DERIV_AVG_SMOOTH, &_deriv[DRV_FILT], currentTemp);
-  } 
+  // Proportional weighting - Reflects that is easier to heatup than cool down ( in normal range)
+  if (currentTemp < _setPoint ) 
+    _pidCurrent[PIDP] = Pid[PIDP] * error;
   else
-  {
-    _deriv[DRV_FILT] = currentTemp;
-    _deriv[DRV_PRV1] = _deriv[DRV_PRV2] = _deriv[DRV_PRV3] = 0;
-  }
-  _pidCurrent[PIDD] = (Probes[TEMP_PIT]->TemperatureAvg - _deriv[DRV_FILT]);
-  float secondDrv = _pidCurrent[PIDD] - _deriv[DRV_PRV3];
-  secondDrv /= 4; // Average derivative change over last 4 seconds
-  //Save value
-  _deriv[DRV_PRV3] = _deriv[DRV_PRV2];
-  _deriv[DRV_PRV2] = _deriv[DRV_PRV1];
-  _deriv[DRV_PRV1] = _pidCurrent[PIDD];
-  // Add in the calculated second order derivative. Attempt to reduce the lag created by making derivative filter
-  _pidCurrent[PIDD] += secondDrv;
-  _pidCurrent[PIDD] = Pid[PIDD] * _pidCurrent[PIDD];
+    _pidCurrent[PIDP] = Pid[PIDP] * error * 2;
+
+  // IIIII = fan speed percent per degree of accumulated error
+  // Limit the error rate reaching Integrator
+  if ( (_pitStartRecover == PIDSTARTRECOVER_STARTUP) && (error > INTEGRAL_STARTUP_RATE) ) {
+    error = INTEGRAL_STARTUP_RATE;
+  }  // anti-windup: Make sure we only adjust the I term while inside the proportional control range
+  if ((error > 0 && lastOutput < 100) || (error < 0 && lastOutput > 0))
+    _pidCurrent[PIDI] += Pid[PIDI] * error;
+
+  // DDDDD = fan speed percent per degree of change over TEMPPROBE_AVG_SMOOTH period
+  error = Probes[TEMP_PIT]->TemperatureAvg - Probes[TEMP_PIT]->Temperature;
+  // Smooth out the Deriv as Pid calcs are being done extremely often
+  // Will also tame huge instantaneous changes
+  calcExpMovingAverage(DERIV_FILTER_SMOOTH, &_derivFilt, error);
+  _pidCurrent[PIDD] = Pid[PIDD] * _derivFilt;
 
   // BBBBB = fan speed percent
   _pidCurrent[PIDB] = Pid[PIDB];
 
   int control = _pidCurrent[PIDB] + _pidCurrent[PIDP] + _pidCurrent[PIDI] + _pidCurrent[PIDD];
-
   _pidOutput = constrain(control, 0, 100);
 
-  // Check if we are trying to drive the controller beyond full saturation
-  // sat 0 is ok, -1 is controller is out of saturated low, 1 is saturated high
-  signed char sat = satlimit(control,(int)_pidOutput);
 
-  // IIIII = fan speed percent per degree of accumulated error
-  // Integral latching: Make sure we only adjust the I term while inside the proportional control range
-  if (sat == 0 )
-  {
-    _pidCurrent[PIDI] += Pid[PIDI] * error;
-  } 
-  else {
-	// Additional check to see if we way over saturated. Keeps integrator from bouncing off the control limits
-	if ( (control - (int)_pidOutput) * sat > 2 )
-      //Integral Anti-windup will slowly bring the integral back to 0 as long as the control is saturated
-      _pidCurrent[PIDI] = (1- Pid[PIDI]) * _pidCurrent[PIDI];
-  }
 }
 
 void GrillPid::fanVoltWrite(unsigned char val)
@@ -621,11 +599,6 @@ inline void GrillPid::commitFanOutput(void)
 #endif /* GRILLPID_FAN_BY_SERVO */
   }
 
-#if defined(ROB_OUTPUT_HACK)
-  // Simply to show on web page
-  Probes[TEMP_AMB]->Temperature = _fanSpeed;
-#endif /* ROB_OUTPUT_HACK */
-
   /* For anything above _minFanSpeed, do a nomal PWM write.
      For below _minFanSpeed we use a "long pulse PWM", where
      the pulse is 10 seconds in length.  For each percent we are
@@ -730,7 +703,7 @@ void GrillPid::setSetPoint(int value)
   _setPoint = value;
   _pitStartRecover = PIDSTARTRECOVER_STARTUP;
   _manualOutputMode = false;
-  _pidCurrent[PIDI] = 0.0f;
+  //_pidCurrent[PIDI] = 0.0f;
   LidOpenResumeCountdown = 0;
 }
 
@@ -764,11 +737,7 @@ void GrillPid::status(void) const
 
   for (unsigned char i=0; i<TEMP_COUNT; ++i)
   {
-#if defined(ROB_OUTPUT_HACK)
-		if ((Probes[i]->hasTemperature()) || (i == TEMP_AMB))
-#else
     if (Probes[i]->hasTemperature())
-#endif /* ROB_OUTPUT_HACK */
       SerialX.print(Probes[i]->Temperature, 1);
     else
       Serial_char('U');
@@ -814,7 +783,7 @@ boolean GrillPid::doWork(void)
     // Always calculate the output
     // calcPidOutput() will bail if it isn't supposed to be in control
     calcPidOutput();
-    
+
     int pitTemp = (int)Probes[TEMP_PIT]->Temperature;
     if ((pitTemp >= _setPoint) &&
       (_lidOpenDuration - LidOpenResumeCountdown > LIDOPEN_MIN_AUTORESUME))
@@ -822,10 +791,10 @@ boolean GrillPid::doWork(void)
       // When we first achieve temperature, reduce any I sum we accumulated during startup
       // If we actually neded that sum to achieve temperature we'll rebuild it, and it
       // prevents bouncing around above the temperature when you first start up
-      if (_pitStartRecover == PIDSTARTRECOVER_STARTUP)
-      {
-        _pidCurrent[PIDI] *= 0.50f;
-      }
+      //if (_pitStartRecover == PIDSTARTRECOVER_STARTUP)
+      //{
+        //_pidCurrent[PIDI] *= 0.50f;
+      //}
       _pitStartRecover = PIDSTARTRECOVER_NORMAL;
       LidOpenResumeCountdown = 0;
     }
