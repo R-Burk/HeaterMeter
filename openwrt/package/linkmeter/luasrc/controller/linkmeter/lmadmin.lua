@@ -8,6 +8,7 @@ function index()
   entry({"admin", "lm", "fw"}, call("action_fw"), "AVR Firmware", 40)
   entry({"admin", "lm", "conf"}, template("linkmeter/conf"), "Configuration", 50)
   entry({"admin", "lm", "credits"}, template("linkmeter/credits"), "Credits", 60)
+  entry({"admin", "lm", "test"}, template("linkmeter/test"), "Test", 70)
 
   entry({"admin", "lm", "usercss"}, cbi("linkmeter/usercss"))
 

@@ -13,6 +13,7 @@
 var lastUpdateUtc;
 var lastPlot;
 var lastOverviewPlot;
+var lastPidPlot;
 var lastGraphHover = 0;
 var lastLidOpen = -1;
 
@@ -60,6 +61,30 @@ var graphData =  [
         selection: { mode: "x" }
     };
 
+var graphPid = [
+    { label: "pidB", color: "#F7FE2E", lines: { show: true}, data: [] }, // pid Bias - Yellow
+    { label: "pidP", color: "#64FE2E", lines: { show: true}, data: [] }, // pid Proportional output - Green
+    { label: "pidI", color: "#8258FA", lines: { show: true}, data: [] }, // pid Integral output - Purple
+    { label: "pidD", color: "#FF0040", lines: { show: true}, data: [] }, // pid Derivative output - Red
+    { label: "Kp", color: "#A4A4A4", lines: {show: false, lineWidth: 1 }, data: [] },    // Kp
+    { label: "Ki", color: "#A4A4A4", lines: {show: false, lineWidth: 1 }, data: [] },    // Ki
+    { label: "Kd", color: "#A4A4A4", lines: {show: false, lineWidth: 1 }, data: [] }     // Kd
+  ];   
+    
+var graphPidOpts = {
+      legend: { show: false },
+      canvas: false,
+      series: {
+          lines: {show: true, lineWidth: 2 },
+          point: {show: false, symbol: "circle", radus: 1, fill: false },
+          shadowSize: 4
+      },
+      xaxis: { show: true, mode: "time", timezone: "browser", font: { color: "#ccc"} },
+      yaxis: { show: true, ticks: 10, font: { color: "#ccc" } },
+      yaxes: [ { position: "right" } ],
+      grid: { clickable: false, hoverable: false, color: "#ccc", bordercolor: "#545454" }
+  };
+    
 $(document).ready(function()
 {
     loadPrefs();
@@ -86,8 +111,6 @@ $(document).ready(function()
     $(".pname").editable(nameChanged, {maxlength: 13, select: true});
     $("#pn0").editable(nameChanged, {maxlength: 13, width: "13em", select: true});
     $("#set").editable(tempChanged, {style: "display: inline", select: true});
-	//Soon as login as root showing the PidInt. I can't sent a keypress on phone or tablet
-    $.get("<%=build_url("admin/lm/set")%>", {tp: 1});
     
     $("#lid").click(function () { 
         if (lastLidOpen == -1) return;
@@ -215,14 +238,10 @@ function keyPressed(e)
 
 function togglePidInt()
 {
-  if ($("#pidint").is(":visible"))
-    // Use a timeout on success to make sure the next (final) update
-    // doesn't turn the display back on and leave it on
-    $.get("<%=build_url("admin/lm/set")%>", {tp: 0},
-      function () { $("#pidint").delay(1000).fadeOut('fast'); }
-    );
+  if ( $("#pidint").is(":visible") )
+    $("#pidint").hide();
   else
-    $.get("<%=build_url("admin/lm/set")%>", {tp: 1});
+    $("#pidint").show();
 }
 
 function pidIntBar(target, val)
@@ -242,12 +261,23 @@ function pidIntBar(target, val)
 
 function pidIntEvent(o)
 {
-  $("#pidint").show('fast');
+  //$("#pidint").show('fast');
   $("#pivb").html(o.b.toFixed(1) + "%"); pidIntBar("#pibb", o.b);
   $("#pivp").html(o.p.toFixed(1) + "%"); pidIntBar("#pibp", o.p);
   $("#pivi").html(o.i.toFixed(1) + "%"); pidIntBar("#pibi", o.i);
   $("#pivd").html(o.d.toFixed(1) + "%"); pidIntBar("#pibd", o.d);
   $("#pivdt").html(o.t.toFixed(2) + "&deg;");
+  
+  var millis = ((new Date).getTime());
+  if (lastUpdateUtc > 1414198056 ) {
+    addGraphPoint(graphPid[0].data, lastUpdateUtc, o.b);
+    addGraphPoint(graphPid[1].data, lastUpdateUtc, o.p);
+    addGraphPoint(graphPid[2].data, lastUpdateUtc, o.i);
+    addGraphPoint(graphPid[3].data, lastUpdateUtc, o.d);
+    addGraphPoint(graphPid[4].data, lastUpdateUtc, o.kp);
+    addGraphPoint(graphPid[5].data, lastUpdateUtc, o.ki);
+    addGraphPoint(graphPid[6].data, lastUpdateUtc, o.kd);
+  };
 }
 
 function graphNoise(s)
@@ -313,6 +343,10 @@ function refreshGraphData()
         this.data = [];
     });
     
+     $.each(graphPid, function() {
+        this.data = [];
+    });
+    
     var params = {nancnt: range};
     <% if rrd then write("params.rrd = '"..rrd.."'; graphOpts.canvas = true;") end %>
     $.ajax({
@@ -354,6 +388,7 @@ function doPlot()
 {
     lastPlot = $.plot($("#graph"), graphData, graphOpts);
     <% if rrd then write("saveAsPng(lastPlot);") end %>
+    lastPidPlot = $.plot($("#graphPid"), graphPid, graphPidOpts);
 }
 
 function updateGraphRanges(from, to)
@@ -361,6 +396,8 @@ function updateGraphRanges(from, to)
     $("#graphtt").fadeOut();
     graphOpts.xaxis.min = from;
     graphOpts.xaxis.max = to;
+    graphPidOpts.xaxis.min = from;
+    graphPidOpts.xaxis.max = to;
     doPlot();
 }
 
@@ -519,7 +556,7 @@ function graphClicked(event, pos, item)
     }
 }
 
-function addGraphPoint(d, time, temp)
+function addGraphPoint(d, time, val)
 {
     // if the last two points have the same value as the
     // new point just update the time on the last point
@@ -527,7 +564,7 @@ function addGraphPoint(d, time, temp)
     {
         var p1 = d[d.length-2];
         var p2 = d[d.length-1];
-        if (p1[1] == temp && p2[1] == temp)
+        if (p1[1] == val && p2[1] == val)
         {
             p2[0] = time;
             return;
@@ -535,10 +572,10 @@ function addGraphPoint(d, time, temp)
     }
     // The RRD may start with a ton of NaN, don't put them into the graph
     // because otherwise it makes a blank space until the first real value
-    else if (d.length == 0 && isNaN(temp))
+    else if (d.length == 0 && isNaN(val))
         return;
 
-    d.push([time, temp]);
+    d.push([time, val]);
 }
 
 function updateGraph()
@@ -556,6 +593,7 @@ function updateGraph()
       lastOverviewPlot.clearSelection(false); 
       
     lastOverviewPlot = $.plot($("#graph_overview"), graphData, graphOpts2);
+    lastPidPlot = $.plot($("#graphPid"), graphPid, graphPidOpts);
     
     if (extendSelection)
         selectedArea.xaxis.to = lastOverviewPlot.getAxes().xaxis.max;
@@ -587,7 +625,7 @@ function tstatSuccess(csv)
     // mapCsv translates csv field index to graphData index
     // a graphData index of -1 means not to map it
     //var mapCsv = [-1,3,7,6,5,4,0,2];
-    var mapCsv = [-1,2,6,5,4,3,0,7,-1,-1,-1,-1,-1,-1,-1];
+    var mapCsv = [-1,2,6,5,4,3,0,7,20,21,22,23,24,25,26];
     
     clearLoadingIndic();
     $.each(csv.split('\n'), function (){
@@ -603,8 +641,10 @@ function tstatSuccess(csv)
             var value = parseFloat(line[valIdx]);
             if (dest == 0)
                 addFanGraphPoint(line[0], value);
-            else    
+            if (dest < 20)    
                 addGraphPoint(graphData[dest].data, line[0], value);
+            else
+                addGraphPoint(graphPid[dest-20].data, line[0], value);
         }
     });
     graphLoaded = true;
@@ -689,9 +729,9 @@ function connectionSuccess(o)
 
     if (graphLoaded)
     {
-        addFanGraphPoint(o.time, o.lid > 0 ? -o.lid : o.fan.c);
-		addGraphPoint(graphData[2].data, o.time, o.set);
-		addGraphPoint(graphData[7].data, o.time, o.fan.f);
+      addFanGraphPoint(o.time, o.lid > 0 ? -o.lid : o.fan.c);
+      addGraphPoint(graphData[2].data, o.time, o.set);
+      addGraphPoint(graphData[7].data, o.time, o.fan.f);
     }
 
     for(var i = 0; i < 4; i++)
@@ -896,6 +936,7 @@ td.probe { width: 33%; position: relative; }
 #png { display: none; height: 350px; margin: 8px auto 0px auto; }
 #noisegraph { display: none; height: 256px; width: 1058px; margin: 8px auto 0px auto; }
 #noisegraph_g { height: 256px; width: 1024px; float: left; }
+#graphPid { height: 200px; width: 95%; margin: 8px auto 0px auto; }
 #graph { height: 350px; width: 95%; margin: 8px auto 0px auto; }
 #graph_overview { height: 90px; width: 95%; margin-left: auto; margin-right: auto; }
 #graph_opts { color: #000; }
@@ -1007,6 +1048,7 @@ img.preload { display: none; }
           <div class="noisebtn last">5</div>
 <% end %>
         </div>
+        <div id="graphPid"></div>
         <div id="graph"></div>
         <div id="graph_overview"></div>
         <div id="loadindic"><img src="<%=resource%>/loading.gif" style="width: 126px; height: 22px;"></div>

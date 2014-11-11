@@ -56,10 +56,17 @@ local function rrdCreate()
    "DS:t3:GAUGE:30:0:1000",  --temp3
    "DS:co:GAUGE:30:-1000:100",  --Controller Output. IE - PidOutput
    "DS:fn:GAUGE:30:0:100",    -- Fan Speed
-   "RRA:AVERAGE:0.6:5:360",   --Archive, Average type, ,5 PDP averaged into one row, 360 rows archived - Each record is 10 seconds( PDP * 5). 1 hour
-   "RRA:AVERAGE:0.6:30:360",  --Archive, average type, ,30 CDP averaged into one row, 360 rows archived - Each record is 1 min ( PDP * 30). 6 hours
-   "RRA:AVERAGE:0.6:60:360",  --Archive, Average type, ,60 CDP averaged into one row, 360 rows archived  - Each recod is 2 min ( PDP * 60). 12 hours
-   "RRA:AVERAGE:0.6:90:480"   --Archive, Average type, ,90 CDP averaged into one row, 480 rows archived - Each record is 3 mins ( PDP * 90). 24 hours
+   "DS:pidb:GAUGE:30:U:U",  -- pid Bias
+   "DS:pidp:GAUGE:30:U:U",    -- pid Proportional output
+   "DS:pidi:GAUGE:30:U:U", --pid Integrator output
+   "DS:pidd:GAUGE:30:U:U",    --pid Derivative output
+   "DS:prop:GAUGE:30:0:100",     --Proportional param
+   "DS:int:GAUGE:30:0:1",       --Integral param
+   "DS:deriv:GAUGE:30:0:100",     --Derivative param
+   "RRA:AVERAGE:0.2:5:360",   --Archive, Average type, ,5 PDP averaged into one row, 360 rows archived - Each record is 10 seconds( PDP * 5). 1 hour
+   "RRA:AVERAGE:0.2:30:360",  --Archive, average type, ,30 CDP averaged into one row, 360 rows archived - Each record is 1 min ( PDP * 30). 6 hours
+   "RRA:AVERAGE:0.2:60:360",  --Archive, Average type, ,60 CDP averaged into one row, 360 rows archived  - Each recod is 2 min ( PDP * 60). 12 hours
+   "RRA:AVERAGE:0.2:90:480"   --Archive, Average type, ,90 CDP averaged into one row, 480 rows archived - Each record is 3 mins ( PDP * 90). 24 hours
  )
 end
 
@@ -188,14 +195,16 @@ local function segLogMessage(line)
 end
 
 local lastPidInternals
+local lastPidStatus
 local function stsPidInternals()
   local vals = segSplit(lastPidInternals)
-  return ('event: pidint\ndata: {"b":%s,"p":%s,"i":%s,"d":%s,"t":%s}\n\n')
-    :format(vals[1], vals[2], vals[3], vals[4], vals[5])
+  return ('event: pidint\ndata: {"b":%s,"p":%s,"i":%s,"d":%s,"t":%s,"kp":%s,"ki":%s,"kd":%s}\n\n')
+    :format(vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7], vals[8])
 end
 
 local function segPidInternals(line)
   lastPidInternals = line
+  lastPidStatus = true
   broadcastStatus(stsPidInternals)
 end
           
@@ -518,7 +527,38 @@ local function segStateUpdate(line)
       --if #vals > 9 then table.remove(vals, 10) end -- fan
       table.remove(vals, 9) -- lid
       table.remove(vals, 8) -- output avg
-
+      
+      --See if we have data from Pid 	  
+      if lastPidStatus == true then
+        local pidvals = segSplit(lastPidInternals)
+        if #pidvals > 3 then
+          table.insert(vals, pidvals[1])  --pid Bias
+          table.insert(vals, pidvals[2])  --pid P
+          table.insert(vals, pidvals[3])  --pid I
+          table.insert(vals, pidvals[4])  --pid D
+        end
+        -- skipping pidval[5] - deltaTemp
+        if #pidvals >= 8 then
+          table.insert(vals, pidvals[6])  --P param
+          table.insert(vals, pidvals[7])  --I param
+          table.insert(vals, pidvals[8])  --D param
+        else
+          table.insert(vals, 'U')
+          table.insert(vals, 'U')
+          table.insert(vals, 'U')
+        end
+        --Mark this as used. New update will flip it back to true
+        lastPidStatus = false
+    else
+      table.insert(vals, 'U')
+      table.insert(vals, 'U')
+      table.insert(vals, 'U')
+      table.insert(vals, 'U')
+      table.insert(vals, 'U')
+      table.insert(vals, 'U')
+      table.insert(vals, 'U')
+	  end
+	  
       -- update() can throw an error if you try to insert something it
       -- doesn't like, which will take down the whole server, so just
       -- ignore any error
@@ -654,6 +694,7 @@ local function initHmVars()
   hmConfig = nil
   lastIp = nil
   lastIpCheck = 0
+  lastPidStatus = false
   rfMap = {}
   rfStatus = {}
   hmAlarms = {}
@@ -688,6 +729,21 @@ local function lmdStart()
   nixio.umask("0022")
   -- Create database
   if not nixio.fs.access(RRD_FILE) then
+    rrdCreate()
+  end
+  
+  --Check version of RRD file
+  local info = rrd.info(RRD_FILE)
+  local rebuild = true
+  for key, val in pairs(info) do
+    if key == "ds[deriv]" then
+      print(key)
+      rebuild = false
+      break
+    end
+  end
+  if rebuild then
+    nixio.fs.remove(RRD_FILE)
     rrdCreate()
   end
 
