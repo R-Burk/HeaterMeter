@@ -120,7 +120,7 @@ public:
 // Try to output a constant voltage instead of PWM
 #define PIDFLAG_FAN_FEEDVOLT  4
 // PID control only on servo. Fan is ganged to servo endpoints
-#define PIDFLAG_FAN_BY_SERVO    5
+#define PIDFLAG_SERVO_THEN_FAN 5
 
 // pitStartRecover constants
 // STARTUP - Attempting to reach temperature for the first time
@@ -166,6 +166,7 @@ private:
   unsigned char _minFanSpeed;
   unsigned char _maxServoPos;
   unsigned char _minServoPos;
+  unsigned char _maxPidOutput;
   unsigned char _outputFlags;
 
   // Current fan speed (percent)
@@ -254,7 +255,7 @@ public:
   // true if PidOutput > 0
   boolean isOutputActive(void) const { return _pidOutput != 0; }
   // true if fan is running at maximum speed or servo wide open
-  boolean isOutputMaxed(void) const { return _pidOutput >= 100; }
+  boolean isOutputMaxed(void) const { return _pidOutput >= _maxPidOutput; }
   // true if temperature was >= setpoint since last set / lid event
   boolean isPitTempReached(void) const { return _pitStartRecover == PIDSTARTRECOVER_NORMAL; }
   unsigned char getPitStartRecover(void) const { return _pitStartRecover; }

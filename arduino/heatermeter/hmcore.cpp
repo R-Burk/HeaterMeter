@@ -61,9 +61,11 @@ static const struct __eeprom_data {
   /* Need to rethink this. If you disable RMF12 then on a reflash the eeprom data no longer matches
 		 Possibly put at the end of the structure so it gets truncated?
   */
-//#ifdef HEATERMETER_RFM12
+#ifdef HEATERMETER_RFM12
   unsigned char rfMap[TEMP_COUNT];
-//#endif
+#else
+  unsigned char open_spot[TEMP_COUNT];
+#endif
   char pidUnits;
   unsigned char minFanSpeed;  // in percent
   unsigned char maxFanSpeed;  // in percent
@@ -87,11 +89,13 @@ static const struct __eeprom_data {
 		 Possibly put at the end of the structure so it gets truncated if compiled out?
   */
   { RFSOURCEID_ANY, RFSOURCEID_ANY, RFSOURCEID_ANY, RFSOURCEID_ANY },  // rfMap
+#else
+  { 0, 0, 0, 0}, // unused
 #endif
   'F',  // Units
   0,    // min fan speed
   100,  // max fan speed
-  bit(PIDFLAG_FAN_FEEDVOLT)|bit(PIDFLAG_FAN_BY_SERVO), // PID output flags bitmask
+  bit(PIDFLAG_FAN_FEEDVOLT)|bit(PIDFLAG_SERVO_THEN_FAN), // PID output flags bitmask
   0xff, // 2-line home
   100, // max startup fan speed
   { LEDSTIMULUS_FanMax, LEDSTIMULUS_LidOpen, LEDSTIMULUS_FanOn, LEDSTIMULUS_Off },
@@ -309,7 +313,7 @@ static void storeMaxServoPos(unsigned char maxServoPos)
 static void storePidOutputFlags(unsigned char pidOutputFlags)
 {
   pid.setOutputFlags(pidOutputFlags);
-  config_store_byte(pidOutputFlags, pidOutputFlags);
+  config_store_byte(pidOutputFlags, pid.getOutputFlags());
 }
 
 void storeLcdBacklight(unsigned char lcdBacklight)
@@ -1234,13 +1238,13 @@ static void newTempsAvail(void)
   if ((pidCycleCount % 0x20) == 0)
     outputRfStatus();
 
+  //if (g_LogPidInternals)
+    pid.pidStatus();
+
   outputCsv();
   // We want to report the status before the alarm readout so
   // receivers can tell what the value was that caused the alarm
   checkAlarms();
-
-  if (g_LogPidInternals)
-    pid.pidStatus();
 
   if ((pidCycleCount % 0x04) == 1)
     outputAdcStatus();

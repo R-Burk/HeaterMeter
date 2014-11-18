@@ -395,6 +395,19 @@ void GrillPid::setOutputFlags(unsigned char value)
   //TCCR2B = bit(CS22) | bit(CS21) | bit(CS20);
   //Not using analogWrite so need to make sure pin is initialized
   pinMode(PIN_BLOWER, OUTPUT);
+  //Make sure only one mode of operation has been specified
+  if (bit_is_set(_outputFlags,PIDFLAG_SERVO_THEN_FAN)) {
+    _outputFlags &= ~(1<<PIDFLAG_FAN_ONLY_MAX);
+    _outputFlags &= ~(1<<PIDFLAG_SERVO_ANY_MAX);
+  }
+  if (bit_is_set(_outputFlags,PIDFLAG_SERVO_ANY_MAX)) {
+    _outputFlags &= ~(1<<PIDFLAG_FAN_ONLY_MAX);
+  }
+  // setMaxPidOutput based on mode
+  if (bit_is_set(_outputFlags, PIDFLAG_SERVO_THEN_FAN))
+    _maxPidOutput = 200 - SERVO_FAN_OVERLAP;
+  else
+    _maxPidOutput = 100;
 }
 
 unsigned int GrillPid::countOfType(unsigned char probeType) const
@@ -435,7 +448,7 @@ inline void GrillPid::calcPidOutput(void)
   if ( (_pitStartRecover == PIDSTARTRECOVER_STARTUP) && (error > INTEGRAL_STARTUP_RATE) ) {
     error = INTEGRAL_STARTUP_RATE;
   }  // anti-windup: Make sure we only adjust the I term while inside the proportional control range
-  if ((error > 0 && lastOutput < 100) || (error < 0 && lastOutput > 0))
+  if ((error > 0 && lastOutput < _maxPidOutput) || (error < 0 && lastOutput > 0))
     _pidCurrent[PIDI] += Pid[PIDI] * error;
 
   // DDDDD = fan speed percent per degree of change over TEMPPROBE_AVG_SMOOTH period
@@ -449,9 +462,7 @@ inline void GrillPid::calcPidOutput(void)
   _pidCurrent[PIDB] = Pid[PIDB];
 
   int control = _pidCurrent[PIDB] + _pidCurrent[PIDP] + _pidCurrent[PIDI] + _pidCurrent[PIDD];
-  _pidOutput = constrain(control, 0, 100);
-
-
+  _pidOutput = constrain(control, 0, _maxPidOutput);
 }
 
 void GrillPid::fanVoltWrite(unsigned char val)
@@ -554,51 +565,22 @@ inline void GrillPid::commitFanOutput(void)
       max = _maxStartupFanSpeed;
     else
       max = _maxFanSpeed;
-
-#if defined(GRILLPID_FAN_BY_SERVO)
-    if (bit_is_set(_outputFlags, PIDFLAG_FAN_BY_SERVO) && (!_manualOutputMode)) {
-      boolean madeSpeedShift = false;
-	    unsigned long elapsed = millis() - _lastFanMillis;
-	    if (elapsed > FAN_GANG_PERIOD ) {
-        if ( _pidOutput > FAN_GANG_UPSHIFT ) {
-            // Upshift if less than 100
-            if  (_lastFanSpeed < 100 ) {
-              _lastFanSpeed += FAN_GANG_SHIFT;
-              madeSpeedShift = true;
-              // Knock the integrator back down as we are going to push more air
-              _pidCurrent[PIDI] = _pidCurrent[PIDI] - max/(FAN_GANG_SHIFT*2);
-            }
-          }
-        if ( _pidOutput < FAN_GANG_DNSHIFT ) {
-          //Jump to 0 if servo has went to 0
-          if ( _pidOutput == 0 ) { 
-            _lastFanSpeed = 0;
-          }
-          // Downshift if more than 0
-          if ( _lastFanSpeed > 0 ) {
-            _lastFanSpeed -= FAN_GANG_SHIFT;
-            madeSpeedShift = true;
-            // Give the integrator a bit more as we reduced airflow
-            _pidCurrent[PIDI] = _pidCurrent[PIDI] + max/(FAN_GANG_SHIFT*2);
-          }
-        }
-        constrain(_lastFanSpeed,0,100);
-        /* Check if we actually did anything and if so then update to lock out
-           for FAN_GANG_PERIOD
-        */
-        if ( madeSpeedShift ) {
-          _lastFanMillis = millis();
-        }
-		  }
-      _fanSpeed = (unsigned int)_lastFanSpeed * max / 100;
-	}
-    else {
-#endif /* GRILLPID_FAN_BY_SERVO */
-    _fanSpeed = (unsigned int)_pidOutput * max / 100;
-#if defined(GRILLPID_FAN_BY_SERVO)
+    
+    if (bit_is_set(_outputFlags, PIDFLAG_SERVO_THEN_FAN)) 
+    {
+      //Make sure _fanSpeed only sees 0 - 100 and does nothing till until _pidOutput
+      //is in the overlap region or higher
+      if  (_pidOutput > (100 - SERVO_FAN_OVERLAP) )
+        _fanSpeed = (unsigned int)(_pidOutput - (100 - SERVO_FAN_OVERLAP)) * max / 100;
+      else
+        _fanSpeed = 0;
     }
-#endif /* GRILLPID_FAN_BY_SERVO */
+    else 
+    {
+      _fanSpeed = (unsigned int)_pidOutput * max / 100;
+    }
   }
+
 
   /* For anything above _minFanSpeed, do a nomal PWM write.
      For below _minFanSpeed we use a "long pulse PWM", where
@@ -656,6 +638,9 @@ inline void GrillPid::commitServoOutput(void)
   else
     output = _pidOutput;
 
+  //Make sure the servo doesn't get anything over 100 when PIDFLAG_SERVO_THEN_FAN is in use
+  constrain(output,0,100);
+
   if (bit_is_set(_outputFlags, PIDFLAG_INVERT_SERVO))
     output = 100 - output;
 
@@ -711,7 +696,7 @@ void GrillPid::setSetPoint(int value)
 void GrillPid::setPidOutput(int value)
 {
   _manualOutputMode = true;
-  _pidOutput = constrain(value, 0, 100);
+  _pidOutput = constrain(value, 0, _maxPidOutput);
   LidOpenResumeCountdown = 0;
 }
 
@@ -745,7 +730,8 @@ void GrillPid::status(void) const
     Serial_csv();
   }
 
-  SerialX.print(getPidOutput(), DEC);
+  //Limit PidOutput display for SERVO_THEN_FAN mode. Saves redoing graphs.
+  SerialX.print(constrain(getPidOutput(),0,100), DEC);
   Serial_csv();
   SerialX.print((int)PidOutputAvg, DEC);
   Serial_csv();
