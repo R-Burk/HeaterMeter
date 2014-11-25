@@ -57,7 +57,7 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>C:\Arduino\arduino-1.0.5\hardware\arduino\cores\arduino;C:\Arduino\arduino-1.0.5\hardware\arduino\variants\standard;C:\Users\bmayland\Documents\Arduino\libraries\rf12_itplus;C:\Users\bmayland\Documents\Arduino\libraries\rf12_itplus\utility;c:\arduino\arduino-1.0.5\hardware\tools\avr\avr\include\;c:\arduino\arduino-1.0.5\hardware\tools\avr\avr\include\avr\;c:\arduino\arduino-1.0.5\hardware\tools\avr\avr\;c:\arduino\arduino-1.0.5\hardware\tools\avr\lib\gcc\avr\4.3.2\include\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Program Files %28x86%29\Arduino\hardware\arduino\cores\arduino;C:\Program Files %28x86%29\Arduino\hardware\arduino\variants\standard;C:\Program Files %28x86%29\Arduino\hardware\tools\avr\avr\include;C:\Program Files %28x86%29\Arduino\hardware\tools\avr\avr\include\avr;C:\Program Files %28x86%29\Arduino\hardware\tools\avr\avr;C:\Program Files %28x86%29\Arduino\hardware\tools\avr\lib\gcc\avr;C:\Program Files %28x86%29\Arduino\libraries;C:\Program Files %28x86%29\Arduino\libraries\digitalWriteFast;C:\Program Files %28x86%29\Arduino\libraries\rf12_itplus;C:\Program Files %28x86%29\Arduino\libraries\eFLL;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ForcedIncludeFiles>C:\Users\bmayland\Documents\GitHub Projects\heatermeter\arduino\heatermeter\Visual Micro\.heatermeter.vsarduino.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
       <IgnoreStandardIncludePath>true</IgnoreStandardIncludePath>
       <PreprocessorDefinitions>__AVR_ATmega328P__;_DEBUG=1;_VMDEBUG=1;ARDUINO=105;ARDUINO_MAIN;__AVR__;F_CPU=16000000L;__cplusplus;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -103,9 +103,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <None Include="heatermeter.ino">
+    <ClCompile Include="heatermeter.ino">
       <FileType>CppCode</FileType>
-    </None>
+    </ClCompile>
     <None Include="README.txt" />
   </ItemGroup>
   <ItemGroup>
@@ -116,8 +116,9 @@
     <ClInclude Include="flashfiles.h">
       <FileType>CppHeader</FileType>
     </ClInclude>
-    <ClInclude Include="grillpid.h" />
-    <ClInclude Include="grillpid_conf.h" />
+    <ClInclude Include="fuzzycontrol.h" />
+    <ClInclude Include="grillcontrol.h" />
+    <ClInclude Include="grill_conf.h" />
     <ClInclude Include="hmcore.h" />
     <ClInclude Include="hmmenus.h">
       <FileType>CppHeader</FileType>
@@ -128,12 +129,14 @@
     <ClInclude Include="menus.h">
       <FileType>CppHeader</FileType>
     </ClInclude>
+    <ClInclude Include="pid.h" />
     <ClInclude Include="rfmanager.h">
       <FileType>CppHeader</FileType>
     </ClInclude>
     <ClInclude Include="serialxor.h">
       <FileType>CppHeader</FileType>
     </ClInclude>
+    <ClInclude Include="stackmon.h" />
     <ClInclude Include="strings.h">
       <FileType>CppHeader</FileType>
     </ClInclude>
@@ -145,13 +148,16 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="econfig.c" />
-    <ClCompile Include="grillpid.cpp" />
+    <ClCompile Include="fuzzycontrol.cpp" />
+    <ClCompile Include="grillcontrol.cpp" />
     <ClCompile Include="hmcore.cpp" />
     <ClCompile Include="hmmenus.cpp" />
     <ClCompile Include="ledmanager.cpp" />
     <ClCompile Include="menus.cpp" />
+    <ClCompile Include="pid.cpp" />
     <ClCompile Include="rfmanager.cpp" />
     <ClCompile Include="serialxor.cpp" />
+    <ClCompile Include="stackmon.c" />
     <ClCompile Include="tone_4khz.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

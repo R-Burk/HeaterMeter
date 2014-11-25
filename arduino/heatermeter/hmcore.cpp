@@ -19,7 +19,12 @@ static TempProbe probe0(PIN_PIT);
 static TempProbe probe1(PIN_FOOD1);
 static TempProbe probe2(PIN_FOOD2);
 static TempProbe probe3(PIN_AMB);
-GrillPid pid;
+GrillControl control;
+#if defined(GRILL_USE_FLC)
+GrillFLC flc;
+#else
+PID pid;
+#endif
 
 #ifdef SHIFTREGLCD_NATIVE
 ShiftRegLCD lcd(PIN_SERVO, PIN_LCD_CLK, TWO_WIRE, 2);
@@ -49,13 +54,18 @@ unsigned char g_LcdBacklight; // 0-100
 #define config_store_word(eeprom_field, src) { econfig_write_word((uint16_t *)offsetof(__eeprom_data, eeprom_field), src); }
 
 #define EEPROM_MAGIC 0xf00e
+#define CASSERT(ex) { typedef char cassert_type[(ex) ? 1 : -1]; }
 
 static const struct __eeprom_data {
   unsigned int magic;
   int setPoint;
   unsigned char lidOpenOffset;
   unsigned int lidOpenDuration;
+#if defined(GRILL_USE_PID)
   float pidConstants[4]; // constants are stored Kb, Kp, Ki, Kd
+#else
+  unsigned long _open1[4];
+#endif
   boolean manualMode;
   unsigned char lcdBacklight; // in PWM (max 100)
   /* Need to rethink this. If you disable RMF12 then on a reflash the eeprom data no longer matches
@@ -64,7 +74,7 @@ static const struct __eeprom_data {
 #ifdef HEATERMETER_RFM12
   unsigned char rfMap[TEMP_COUNT];
 #else
-  unsigned char open_spot[TEMP_COUNT];
+  unsigned char _open2[TEMP_COUNT];
 #endif
   char pidUnits;
   unsigned char minFanSpeed;  // in percent
@@ -75,13 +85,20 @@ static const struct __eeprom_data {
   unsigned char ledConf[LED_COUNT];
   unsigned char minServoPos;  // in 10us
   unsigned char maxServoPos;  // in 10us
+#if defined(GRILL_USE_FLC)
+  float flcTunings[2];
+#endif
 } DEFAULT_CONFIG[] PROGMEM = {
  {
   EEPROM_MAGIC,  // magic
   225,  // setpoint
   6,    // lid open offset %
   240,  // lid open duration
-  { 0.0f, 4.0f, 0.004f, 50.0f },  // PID constants
+#ifndef GRILL_USE_FLC
+  { 0.0f, 3.5f, 0.004f, 15.0f },  // PID constants
+#else
+  { 0, 0, 0, 0}, // unused
+#endif
   false, // manual mode
   50,   // lcd backlight (%)
 #ifdef HEATERMETER_RFM12
@@ -101,6 +118,9 @@ static const struct __eeprom_data {
   { LEDSTIMULUS_FanMax, LEDSTIMULUS_LidOpen, LEDSTIMULUS_FanOn, LEDSTIMULUS_Off },
   150-50, // min servo pos = 1000us
   150+50  // max servo pos = 2000us
+#if defined(GRILL_USE_FLC)
+  ,{1, 1}
+#endif
 }
 };
 
@@ -176,13 +196,13 @@ void storeSetPoint(int sp)
   if (sp > 0)
   {
     config_store_word(setPoint, sp);
-    pid.setSetPoint(sp);
-    
+    control.setSetPoint(sp);
+
     isManualMode = false;
   }
   else
   {
-    pid.setPidOutput(-sp);
+    control.setControlOutput(-sp);
     isManualMode = true;
   }
 
@@ -191,7 +211,7 @@ void storeSetPoint(int sp)
 
 static void storePidUnits(char units)
 {
-  pid.setUnits(units);
+  control.setUnits(units);
   if (units == 'C' || units == 'F')
     config_store_byte(pidUnits, units);
 }
@@ -201,7 +221,7 @@ static void storeProbeOffset(unsigned char probeIndex, int offset)
   unsigned char ofs = getProbeConfigOffset(probeIndex, offsetof( __eeprom_probe, tempOffset));
   if (ofs != 0)
   {
-    pid.Probes[probeIndex]->Offset = offset;
+    control.Probes[probeIndex]->Offset = offset;
     econfig_write_byte((unsigned char *)ofs, offset);
   }  
 }
@@ -211,7 +231,7 @@ static void storeProbeType(unsigned char probeIndex, unsigned char probeType)
   unsigned char ofs = getProbeConfigOffset(probeIndex, offsetof( __eeprom_probe, probeType));
   if (ofs != 0)
   {
-    pid.Probes[probeIndex]->setProbeType(probeType);
+    control.Probes[probeIndex]->setProbeType(probeType);
     econfig_write_byte((unsigned char *)ofs, probeType);
   }
 }
@@ -223,7 +243,7 @@ static void reportRfMap(void)
   for (unsigned char i=0; i<TEMP_COUNT; ++i)
   {
     Serial_csv();
-    if (pid.Probes[i]->getProbeType() == PROBETYPE_RF12)
+    if (control.Probes[i]->getProbeType() == PROBETYPE_RF12)
       SerialX.print(rfMap[i], DEC);
   }
   Serial_nl();
@@ -231,7 +251,7 @@ static void reportRfMap(void)
 
 static void checkInitRfManager(void)
 {
-  if (pid.countOfType(PROBETYPE_RF12) != 0)
+  if (control.countOfType(PROBETYPE_RF12) != 0)
     rfmanager.init(HEATERMETER_RFM12);
 }
 
@@ -253,7 +273,7 @@ static void storeProbeTypeOrMap(unsigned char probeIndex, unsigned char probeTyp
   /* If probeType is < 128 it is just a probe type */
   if (probeType < 128)
   {
-    unsigned char oldProbeType = pid.Probes[probeIndex]->getProbeType();
+    unsigned char oldProbeType = control.Probes[probeIndex]->getProbeType();
     if (oldProbeType != probeType)
     {
       storeProbeType(probeIndex, probeType);
@@ -271,7 +291,7 @@ static void storeProbeTypeOrMap(unsigned char probeIndex, unsigned char probeTyp
     unsigned char newSrc = probeType - 128;
     /* Force the storage of TempProbe::setProbeType() if the src changes
        because we need to clear Temperature and any accumulated ADC readings */
-    if (pid.Probes[probeIndex]->getProbeType() != PROBETYPE_RF12 ||
+    if (control.Probes[probeIndex]->getProbeType() != PROBETYPE_RF12 ||
       rfMap[probeIndex] != newSrc)
       storeProbeType(probeIndex, PROBETYPE_RF12);
     storeRfMap(probeIndex, newSrc);
@@ -282,38 +302,38 @@ static void storeProbeTypeOrMap(unsigned char probeIndex, unsigned char probeTyp
 static void storeMinFanSpeed(unsigned char minFanSpeed)
 {
   minFanSpeed = constrain(minFanSpeed, 0, 100);
-  pid.setMinFanSpeed(minFanSpeed);
-  config_store_byte(minFanSpeed, pid.getMinFanSpeed());
+  control.setMinFanSpeed(minFanSpeed);
+  config_store_byte(minFanSpeed, control.getMinFanSpeed());
 }
 
 static void storeMaxFanSpeed(unsigned char maxFanSpeed)
 {
-  pid.setMaxFanSpeed(maxFanSpeed);
-  config_store_byte(maxFanSpeed, pid.getMaxFanSpeed());
+  control.setMaxFanSpeed(maxFanSpeed);
+  config_store_byte(maxFanSpeed, control.getMaxFanSpeed());
 }
 
 static void storeMaxStartupFanSpeed(unsigned char maxStartupFanSpeed)
 {
-  pid.setMaxStartupFanSpeed(maxStartupFanSpeed);
-  config_store_byte(maxStartupFanSpeed, pid.getMaxStartupFanSpeed());
+  control.setMaxStartupFanSpeed(maxStartupFanSpeed);
+  config_store_byte(maxStartupFanSpeed, control.getMaxStartupFanSpeed());
 }
 
 static void storeMinServoPos(unsigned char minServoPos)
 {
-  pid.setMinServoPos(minServoPos);
+  control.setMinServoPos(minServoPos);
   config_store_byte(minServoPos, minServoPos);
 }
 
 static void storeMaxServoPos(unsigned char maxServoPos)
 {
-  pid.setMaxServoPos(maxServoPos);
+  control.setMaxServoPos(maxServoPos);
   config_store_byte(maxServoPos, maxServoPos);
 }
 
 static void storePidOutputFlags(unsigned char pidOutputFlags)
 {
-  pid.setOutputFlags(pidOutputFlags);
-  config_store_byte(pidOutputFlags, pid.getOutputFlags());
+  control.setOutputFlags(pidOutputFlags);
+  config_store_byte(pidOutputFlags, control.getOutputFlags());
 }
 
 void storeLcdBacklight(unsigned char lcdBacklight)
@@ -437,7 +457,7 @@ void updateDisplay(void)
     /* Big Number probes overwrite the whole display if it has a temperature */
     if (g_HomeDisplayMode >= TEMP_PIT && g_HomeDisplayMode <= TEMP_AMB)
     {
-      TempProbe *probe = pid.Probes[g_HomeDisplayMode];
+      TempProbe *probe = control.Probes[g_HomeDisplayMode];
       if (probe->hasTemperature())
       {
         lcdPrintBigNum(probe->Temperature);
@@ -447,19 +467,19 @@ void updateDisplay(void)
 
     /* Default Pit / Fan Speed first line */
     int pitTemp;
-    if (pid.Probes[TEMP_PIT]->hasTemperature())
-      pitTemp = pid.Probes[TEMP_PIT]->Temperature;
+    if (control.Probes[TEMP_PIT]->hasTemperature())
+      pitTemp = control.Probes[TEMP_PIT]->Temperature;
     else
       pitTemp = 0;
-    if (!pid.getManualOutputMode() && !pid.Probes[TEMP_PIT]->hasTemperature())
+    if (!control.getManualOutputMode() && !control.Probes[TEMP_PIT]->hasTemperature())
       memcpy_P(buffer, LCD_LINE1_UNPLUGGED, sizeof(LCD_LINE1_UNPLUGGED));
-    else if (pid.LidOpenResumeCountdown > 0)
+    else if (control.LidOpenResumeCountdown > 0)
       snprintf_P(buffer, sizeof(buffer), PSTR("Pit:%3d"DEGREE"%c Lid%3u"),
-        pitTemp, pid.getUnits(), pid.LidOpenResumeCountdown);
+        pitTemp, control.getUnits(), control.LidOpenResumeCountdown);
     else
     {
       char c1,c2;
-      if (pid.getManualOutputMode())
+      if (control.getManualOutputMode())
       {
         c1 = '^';  // LCD_ARROWUP
         c2 = '^';  // LCD_ARROWDN
@@ -470,7 +490,7 @@ void updateDisplay(void)
         c2 = ']';
       }
       snprintf_P(buffer, sizeof(buffer), PSTR("Pit:%3d"DEGREE"%c %c%3u%%%c"),
-        pitTemp, pid.getUnits(), c1, pid.getPidOutput(), c2);
+        pitTemp, control.getUnits(), c1, control.getControlOutput(), c2);
     }
 
     lcd.print(buffer);
@@ -488,11 +508,11 @@ void updateDisplay(void)
   // Rotating probe display
   for (unsigned char probeIndex=probeIdxLow; probeIndex<=probeIdxHigh; ++probeIndex)
   {
-    if (probeIndex < TEMP_COUNT && pid.Probes[probeIndex]->hasTemperature())
+    if (probeIndex < TEMP_COUNT && control.Probes[probeIndex]->hasTemperature())
     {
       loadProbeName(probeIndex);
       snprintf_P(buffer, sizeof(buffer), PSTR("%-12s%3d"DEGREE), editString,
-        (int)pid.Probes[probeIndex]->Temperature);
+        (int)control.Probes[probeIndex]->Temperature);
     }
     else
     {
@@ -514,6 +534,7 @@ void lcdprint_P(const char PROGMEM *p, const boolean doClear)
   while (unsigned char c = pgm_read_byte(p++)) lcd.write(c);
 }
 
+#if defined(GRILL_USE_PID)
 static void storePidParam(char which, float value)
 {
   unsigned char k;
@@ -531,12 +552,28 @@ static void storePidParam(char which, float value)
   unsigned char ofs = offsetof(__eeprom_data, pidConstants[0]);
   econfig_write_block(&pid.Pid[k], (void *)(ofs + k * sizeof(float)), sizeof(value));
 }
+#else
+static void storeFlcParam(char which, float value)
+{
+  unsigned char k;
+  if (which == 'e')
+    k = FLC_ERR;
+  else if (which == 'c')
+    k = FLC_CIE;
+  else
+    return;
+
+  flc.setFlcTuning(k, value);
+  unsigned char ofs = offsetof(__eeprom_data, flcTunings[0]);
+  econfig_write_block(&flc.tuning[k], (void *)(ofs + k * sizeof(float)), sizeof(value));
+}
+#endif
 
 static void outputCsv(void)
 {
 #ifdef HEATERMETER_SERIAL
   print_P(PSTR("HMSU" CSV_DELIMITER));
-  pid.status();
+  control.status();
   Serial_nl();
 #endif /* HEATERMETER_SERIAL */
 }
@@ -573,7 +610,7 @@ static void reportProbeCoeff(unsigned char probeIdx)
   SerialX.print(probeIdx, DEC);
   Serial_csv();
   
-  TempProbe *p = pid.Probes[probeIdx];
+  TempProbe *p = control.Probes[probeIdx];
   for (unsigned char i=0; i<STEINHART_COUNT; ++i)
   {
     printSciFloat(p->Steinhart[i]);
@@ -604,7 +641,7 @@ static void storeProbeCoeff(unsigned char probeIndex, char *vals)
     }
     else
     {
-      float *fDest = &pid.Probes[probeIndex]->Steinhart[idx];
+      float *fDest = &control.Probes[probeIndex]->Steinhart[idx];
       *fDest = atof(vals);
       econfig_write_block(fDest, (void *)ofs, sizeof(float));
       while (*vals && *vals != ',')
@@ -641,6 +678,7 @@ static void reportProbeNames(void)
   Serial_nl();
 }
 
+#if defined(GRILL_USE_PID)
 static void reportPidParams(void)
 {
   print_P(PSTR("HMPD"));
@@ -652,6 +690,19 @@ static void reportPidParams(void)
   }
   Serial_nl();
 }
+#else
+static void reportFlcParams(void)
+{
+  print_P(PSTR("HMFL"));
+  for (unsigned char i=0; i<2; ++i)
+  {
+    Serial_csv();
+    SerialX.print(flc.tuning[i], 8);
+  }
+  Serial_nl();
+}
+#endif
+
 
 static void reportProbeOffsets(void)
 {
@@ -659,7 +710,7 @@ static void reportProbeOffsets(void)
   for (unsigned char i=0; i<TEMP_COUNT; ++i)
   {
     Serial_csv();
-    SerialX.print(pid.Probes[i]->Offset, DEC);
+    SerialX.print(control.Probes[i]->Offset, DEC);
   }
   Serial_nl();
 }
@@ -686,9 +737,9 @@ static void reportVersion(void)
 static void reportLidParameters(void)
 {
   print_P(PSTR("HMLD" CSV_DELIMITER));
-  SerialX.print(pid.LidOpenOffset, DEC);
+  SerialX.print(control.LidOpenOffset, DEC);
   Serial_csv();
-  SerialX.print(pid.getLidOpenDuration(), DEC);
+  SerialX.print(control.getLidOpenDuration(), DEC);
   Serial_nl();
 }
 
@@ -740,7 +791,7 @@ static void reportAlarmLimits(void)
   print_P(PSTR("HMAL"));
   for (unsigned char i=0; i<TEMP_COUNT; ++i)
   {
-    ProbeAlarm &a = pid.Probes[i]->Alarms;
+    ProbeAlarm &a = control.Probes[i]->Alarms;
     Serial_csv();
     SerialX.print(a.getLow(), DEC);
     if (a.getLowRinging()) Serial_char('L');
@@ -755,17 +806,17 @@ static void reportAlarmLimits(void)
 static void reportFanParams(void)
 {
   print_P(PSTR("HMFN" CSV_DELIMITER));
-  SerialX.print(pid.getMinFanSpeed(), DEC);
+  SerialX.print(control.getMinFanSpeed(), DEC);
   Serial_csv();
-  SerialX.print(pid.getMaxFanSpeed(), DEC);
+  SerialX.print(control.getMaxFanSpeed(), DEC);
   Serial_csv();
-  SerialX.print(pid.getMinServoPos(), DEC);
+  SerialX.print(control.getMinServoPos(), DEC);
   Serial_csv();
-  SerialX.print(pid.getMaxServoPos(), DEC);
+  SerialX.print(control.getMaxServoPos(), DEC);
   Serial_csv();
-  SerialX.print(pid.getOutputFlags(), DEC);
+  SerialX.print(control.getOutputFlags(), DEC);
   Serial_csv();
-  SerialX.print(pid.getMaxStartupFanSpeed(), DEC);
+  SerialX.print(control.getMaxStartupFanSpeed(), DEC);
   Serial_nl();
 }
 
@@ -778,7 +829,11 @@ void storeAndReportMaxFanSpeed(unsigned char maxFanSpeed)
 static void reportConfig(void)
 {
   reportVersion();
+#if defined(GRILL_USE_PID)
   reportPidParams();
+#else
+  reportFlcParams();
+#endif
   reportFanParams();
   reportProbeNames();
   reportProbeCoeffs();
@@ -821,18 +876,18 @@ void storeLidParam(unsigned char idx, int val)
   switch (idx)
   {
     case 0:
-      pid.LidOpenOffset = val;
+      control.LidOpenOffset = val;
       config_store_byte(lidOpenOffset, val);
       break;
     case 1:
-      pid.setLidOpenDuration(val);
+      control.setLidOpenDuration(val);
       config_store_word(lidOpenDuration, val);
       break;
     case 2:
       if (val)
-        pid.resetLidOpenResumeCountdown();
+        control.resetLidOpenResumeCountdown();
       else
-        pid.LidOpenResumeCountdown = 0;
+        control.LidOpenResumeCountdown = 0;
       break;
   }
 }
@@ -842,7 +897,7 @@ void storeLidParam(unsigned char idx, int val)
 static void storeAlarmLimits(unsigned char idx, int val)
 {
   unsigned char probeIndex = ALARM_ID_TO_PROBE(idx);
-  ProbeAlarm &a = pid.Probes[probeIndex]->Alarms;
+  ProbeAlarm &a = control.Probes[probeIndex]->Alarms;
   unsigned char alarmIndex = ALARM_ID_TO_IDX(idx);
   a.setThreshold(alarmIndex, val);
 
@@ -858,7 +913,7 @@ void silenceRingingAlarm(void)
 {
   /*
   unsigned char probeIndex = ALARM_ID_TO_PROBE(g_AlarmId);
-  ProbeAlarm &a = pid.Probes[probeIndex]->Alarms;
+  ProbeAlarm &a = control.Probes[probeIndex]->Alarms;
   unsigned char alarmIndex = ALARM_ID_TO_IDX(g_AlarmId);
   storeAlarmLimits(g_AlarmId, disable ? -a.getThreshold(alarmIndex) : 0);
   */
@@ -912,28 +967,28 @@ static void setControlProbe(unsigned char idx)
   switch (idx)
   {
   case TEMP_PIT:
-    pid.Probes[TEMP_PIT] = &probe0;
-    pid.Probes[TEMP_FOOD1] = &probe1;
-    pid.Probes[TEMP_FOOD2] = &probe2;
-    pid.Probes[TEMP_AMB] = &probe3;
+    control.Probes[TEMP_PIT] = &probe0;
+    control.Probes[TEMP_FOOD1] = &probe1;
+    control.Probes[TEMP_FOOD2] = &probe2;
+    control.Probes[TEMP_AMB] = &probe3;
     break;
   case TEMP_FOOD1:
-    pid.Probes[TEMP_FOOD1] = &probe0;
-    pid.Probes[TEMP_PIT] = &probe1;
-    pid.Probes[TEMP_FOOD2] = &probe2;
-    pid.Probes[TEMP_AMB] = &probe3;
+    control.Probes[TEMP_FOOD1] = &probe0;
+    control.Probes[TEMP_PIT] = &probe1;
+    control.Probes[TEMP_FOOD2] = &probe2;
+    control.Probes[TEMP_AMB] = &probe3;
     break;
   case TEMP_FOOD2:
-    pid.Probes[TEMP_FOOD1] = &probe0;
-    pid.Probes[TEMP_FOOD2] = &probe1;
-    pid.Probes[TEMP_PIT] = &probe2;
-    pid.Probes[TEMP_AMB] = &probe3;
+    control.Probes[TEMP_FOOD1] = &probe0;
+    control.Probes[TEMP_FOOD2] = &probe1;
+    control.Probes[TEMP_PIT] = &probe2;
+    control.Probes[TEMP_AMB] = &probe3;
     break;
   case TEMP_AMB:
-    pid.Probes[TEMP_FOOD1] = &probe0;
-    pid.Probes[TEMP_FOOD2] = &probe1;
-    pid.Probes[TEMP_AMB] = &probe2;
-    pid.Probes[TEMP_PIT] = &probe3;
+    control.Probes[TEMP_FOOD1] = &probe0;
+    control.Probes[TEMP_FOOD2] = &probe1;
+    control.Probes[TEMP_AMB] = &probe2;
+    control.Probes[TEMP_PIT] = &probe3;
     break;
   }
 }
@@ -961,12 +1016,21 @@ static void handleCommandUrl(char *URL)
     csvParseI(URL + 7, storeProbeOffset);
     reportProbeOffsets();
   }
+#if defined(GRILL_USE_PID)
   else if (strncmp_P(URL, PSTR("set?pid"), 7) == 0 && urlLen > 9)
   {
     float f = atof(URL + 9);
     storePidParam(URL[7], f);
     reportPidParams();
   }
+#else
+  else if (strncmp_P(URL, PSTR("set?flc"), 7) == 0 && urlLen > 9)
+  {
+    float f = atof(URL + 9);
+    storeFlcParam(URL[7], f);
+    reportFlcParams();
+  }
+#endif
   else if (strncmp_P(URL, PSTR("set?pn"), 6) == 0 && urlLen > 8)
   {
     // Store probe name will only store it if a valid probe number is passed
@@ -998,6 +1062,10 @@ static void handleCommandUrl(char *URL)
   {
     reportConfig();
   }
+  else if (strncmp_P(URL, PSTR("defaults"), 8) == 0)
+  {
+    eepromLoadConfig(1); // reset eeprom with firmware defaults
+  }
   else if (strncmp_P(URL, PSTR("reboot"), 5) == 0)
   {
     reboot();
@@ -1017,22 +1085,22 @@ static void outputRfStatus(void)
 static void rfSourceNotify(RFSource &r, unsigned char event)
 {
   for (unsigned char i=0; i<TEMP_COUNT; ++i)
-    if ((pid.Probes[i]->getProbeType() == PROBETYPE_RF12) &&
+    if ((control.Probes[i]->getProbeType() == PROBETYPE_RF12) &&
     ((rfMap[i] == RFSOURCEID_ANY) || (rfMap[i] == r.getId()))
     )
     {
       if (event == RFEVENT_Remove)
-        pid.Probes[i]->calcTemp(0);
+        control.Probes[i]->calcTemp(0);
       else if (r.isNative())
-        pid.Probes[i]->setTemperatureC(r.Value / 10.0f);
+        control.Probes[i]->setTemperatureC(r.Value / 10.0f);
       else
       {
         unsigned int val = r.Value;
         unsigned char adcBits = rfmanager.getAdcBits();
         // If the remote is lower resolution then shift it up to our resolution
-        if (adcBits < pid.getAdcBits())
-          val <<= (pid.getAdcBits() - adcBits);
-        pid.Probes[i]->calcTemp(val);
+        if (adcBits < control.getAdcBits())
+          val <<= (control.getAdcBits() - adcBits);
+        control.Probes[i]->calcTemp(val);
       }
     } /* if probe is this source */
 
@@ -1084,7 +1152,7 @@ static void checkAlarms(void)
   {
     for (unsigned char j=ALARM_IDX_LOW; j<=ALARM_IDX_HIGH; ++j)
     {
-      boolean ringing = pid.Probes[i]->Alarms.Ringing[j];
+      boolean ringing = control.Probes[i]->Alarms.Ringing[j];
       unsigned char alarmId = MAKE_ALARM_ID(i, j);
       if (ringing)
       {
@@ -1115,6 +1183,11 @@ static void eepromLoadBaseConfig(unsigned char forceDefault)
     struct __eeprom_probe probe;
   } config;
 
+#if defined(GRILL_USE_PID)
+  CASSERT(sizeof(config.base) == 41);
+#else
+  CASSERT(sizeof(config.base) == 49);
+#endif
   econfig_read_block(&config.base, 0, sizeof(__eeprom_data));
   forceDefault = forceDefault || config.base.magic != EEPROM_MAGIC;
   if (forceDefault != 0)
@@ -1123,27 +1196,32 @@ static void eepromLoadBaseConfig(unsigned char forceDefault)
     econfig_write_block(&config.base, 0, sizeof(__eeprom_data));
   }
   
-  pid.setSetPoint(config.base.setPoint);
-  pid.LidOpenOffset = config.base.lidOpenOffset;
-  pid.setLidOpenDuration(config.base.lidOpenDuration);
+  control.setSetPoint(config.base.setPoint);
+  control.LidOpenOffset = config.base.lidOpenOffset;
+  control.setLidOpenDuration(config.base.lidOpenDuration);
+#if defined(GRILL_USE_PID)
   memcpy(pid.Pid, config.base.pidConstants, sizeof(config.base.pidConstants));
+#endif
   if (config.base.manualMode)
-    pid.setPidOutput(0);
+    control.setControlOutput(0);
   setLcdBacklight(config.base.lcdBacklight);
 #ifdef HEATERMETER_RFM12
   memcpy(rfMap, config.base.rfMap, sizeof(rfMap));
 #endif
-  pid.setUnits(config.base.pidUnits == 'C' ? 'C' : 'F');
-  pid.setMinFanSpeed(config.base.minFanSpeed);
-  pid.setMaxFanSpeed(config.base.maxFanSpeed);
-  pid.setMaxStartupFanSpeed(config.base.maxStartupFanSpeed);
-  pid.setOutputFlags(config.base.pidOutputFlags);
+  control.setUnits(config.base.pidUnits == 'C' ? 'C' : 'F');
+  control.setMinFanSpeed(config.base.minFanSpeed);
+  control.setMaxFanSpeed(config.base.maxFanSpeed);
+  control.setMaxStartupFanSpeed(config.base.maxStartupFanSpeed);
+  control.setOutputFlags(config.base.pidOutputFlags);
   g_HomeDisplayMode = config.base.homeDisplayMode;
-  pid.setMinServoPos(config.base.minServoPos);
-  pid.setMaxServoPos(config.base.maxServoPos);
+  control.setMinServoPos(config.base.minServoPos);
+  control.setMaxServoPos(config.base.maxServoPos);
 
   for (unsigned char led = 0; led<LED_COUNT; ++led)
     ledmanager.setAssignment(led, config.base.ledConf[led]);
+#if defined(GRILL_USE_FLC)
+  memcpy(flc.tuning, config.base.flcTunings, sizeof(config.base.flcTunings));
+#endif
 }
 
 static void eepromLoadProbeConfig(unsigned char forceDefault)
@@ -1155,6 +1233,7 @@ static void eepromLoadProbeConfig(unsigned char forceDefault)
     struct __eeprom_probe probe;
   } config;
 
+  CASSERT((sizeof(config.probe)) == 37);
   // instead of this use below because we don't have eeprom_read_word linked yet
   //magic = eeprom_read_word((uint16_t *)(EEPROM_PROBE_START-sizeof(magic))); 
   econfig_read_block(&config.base, (void *)(EEPROM_PROBE_START-sizeof(config.base.magic)), sizeof(config.base.magic));
@@ -1178,7 +1257,7 @@ static void eepromLoadProbeConfig(unsigned char forceDefault)
     else
       econfig_read_block(&config.probe, p, sizeof(__eeprom_probe));
 
-    pid.Probes[i]->loadConfig(&config.probe);
+    control.Probes[i]->loadConfig(&config.probe);
     ++p;
   }  /* for i<TEMP_COUNT */
 }
@@ -1239,7 +1318,7 @@ static void newTempsAvail(void)
     outputRfStatus();
 
   //if (g_LogPidInternals)
-    pid.pidStatus();
+    control.controlStatus();
 
   outputCsv();
   // We want to report the status before the alarm readout so
@@ -1250,15 +1329,15 @@ static void newTempsAvail(void)
     outputAdcStatus();
 
   ledmanager.publish(LEDSTIMULUS_Off, LEDACTION_Off);
-  ledmanager.publish(LEDSTIMULUS_LidOpen, pid.isLidOpen());
-  ledmanager.publish(LEDSTIMULUS_FanOn, pid.isOutputActive());
-  ledmanager.publish(LEDSTIMULUS_FanMax, pid.isOutputMaxed());
-  ledmanager.publish(LEDSTIMULUS_PitTempReached, pid.isPitTempReached());
-  ledmanager.publish(LEDSTIMULUS_Startup, pid.getPitStartRecover() == PIDSTARTRECOVER_STARTUP);
-  ledmanager.publish(LEDSTIMULUS_Recovery, pid.getPitStartRecover() == PIDSTARTRECOVER_RECOVERY);
+  ledmanager.publish(LEDSTIMULUS_LidOpen, control.isLidOpen());
+  ledmanager.publish(LEDSTIMULUS_FanOn, control.isOutputActive());
+  ledmanager.publish(LEDSTIMULUS_FanMax, control.isOutputMaxed());
+  ledmanager.publish(LEDSTIMULUS_PitTempReached, control.isPitTempReached());
+  ledmanager.publish(LEDSTIMULUS_Startup, control.getPitStartRecover() == PIDSTARTRECOVER_STARTUP);
+  ledmanager.publish(LEDSTIMULUS_Recovery, control.getPitStartRecover() == PIDSTARTRECOVER_RECOVERY);
 
 #ifdef HEATERMETER_RFM12
-  rfmanager.sendUpdate(pid.getPidOutput());
+  rfmanager.sendUpdate(control.getControlOutput());
 #endif
 }
 
@@ -1309,7 +1388,7 @@ void hmcoreSetup(void)
   tone4khz_init();
 
   setControlProbe(TEMP_PIT);
-  pid.init();
+  control.init();
 
   eepromLoadConfig(0);
   lcdDefineChars();
@@ -1332,8 +1411,9 @@ void hmcoreLoop(void)
 #endif /* HEATERMETER_RFM12 */
 
   Menus.doWork();
-  if (pid.doWork())
+  if (control.doWork())
     newTempsAvail();
   tone_doWork();
   ledmanager.doWork();
 }
+

@@ -49,3 +49,4 @@ void tone4khz_begin(unsigned char pin, unsigned char dur)
   timer4k.cnt = (uint16_t)dur * 8U;
   TIMSK1 |= bit(OCIE1A);
 }
+

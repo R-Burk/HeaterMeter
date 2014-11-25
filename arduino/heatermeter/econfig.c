@@ -38,3 +38,4 @@ void econfig_write_byte(void *_dst, uint8_t val)
   uint8_t lval = val;
   econfig_write_block(&lval, _dst, sizeof(lval));
 }
+

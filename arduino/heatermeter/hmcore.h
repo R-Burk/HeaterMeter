@@ -13,8 +13,9 @@
 
 #include "ShiftRegLCD.h"
 #include "serialxor.h"
-#include "grillpid.h"
+#include "grillcontrol.h"
 #include "hmmenus.h"
+#include "fuzzycontrol.h"
 
 // Analog Pins
 // Number in the comment is physical pin on ATMega328
@@ -66,8 +67,14 @@ void silenceRingingAlarm(void);
 #define LIDPARAM_ACTIVE 2
 void storeLidParam(unsigned char idx, int val);
 
-extern GrillPid pid;
+extern GrillControl control;
 extern ShiftRegLCD lcd;
 extern unsigned char g_LcdBacklight;
+#if defined(GRILL_USE_FLC)
+extern GrillFLC flc;
+#else
+extern PID pid;
+#endif
 
 #endif /* __HMCORE_H__ */
+

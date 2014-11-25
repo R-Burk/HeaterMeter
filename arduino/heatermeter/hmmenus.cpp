@@ -1,6 +1,6 @@
 // HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
 #include "hmcore.h"
-#include "grillpid.h"
+#include "grillcontrol.h"
 #include "strings.h"
 
 static state_t menuHome(button_t button);
@@ -161,7 +161,7 @@ static void menuNumberEdit(button_t button, unsigned char increment,
     editInt = maxVal;
 
   lcd.setCursor(0, 1);
-  snprintf_P(buffer, sizeof(buffer), format, editInt, pid.getUnits());
+  snprintf_P(buffer, sizeof(buffer), format, editInt, control.getUnits());
   lcd.print(buffer);
 }
 
@@ -259,19 +259,19 @@ static state_t menuHome(button_t button)
 {
   if (button == BUTTON_ENTER)
   {
-    if (Menus.getState() != ST_HOME_NOPROBES && !pid.isAnyFoodProbeActive())
+    if (Menus.getState() != ST_HOME_NOPROBES && !control.isAnyFoodProbeActive())
       return ST_HOME_NOPROBES;
-    else if (Menus.getState() == ST_HOME_FOOD1 && !pid.Probes[TEMP_FOOD1]->hasTemperature())
+    else if (Menus.getState() == ST_HOME_FOOD1 && !control.Probes[TEMP_FOOD1]->hasTemperature())
       return ST_HOME_FOOD2;
-    else if (Menus.getState() == ST_HOME_FOOD2 && !pid.Probes[TEMP_FOOD2]->hasTemperature())
+    else if (Menus.getState() == ST_HOME_FOOD2 && !control.Probes[TEMP_FOOD2]->hasTemperature())
       return ST_HOME_AMB;
-    else if (Menus.getState() == ST_HOME_AMB && !pid.Probes[TEMP_AMB]->hasTemperature())
+    else if (Menus.getState() == ST_HOME_AMB && !control.Probes[TEMP_AMB]->hasTemperature())
       return ST_HOME_FOOD1;
 
     updateDisplay();
   }
   // In manual fan mode Up is +5% Down is -5% and Left is -1%
-  else if (pid.getManualOutputMode())
+  else if (control.getManualOutputMode())
   {
     char offset;
     if (button == BUTTON_UP)
@@ -283,14 +283,14 @@ static state_t menuHome(button_t button)
     else
       return ST_AUTO;
 
-    pid.setPidOutput(pid.getPidOutput() + offset);
+    control.setControlOutput(control.getControlOutput() + offset);
     updateDisplay();
     return ST_NONE;
   }
   else if (button == BUTTON_LEFT)
   {
     // Left from Home screen enables/disables the lid countdown
-    storeLidParam(LIDPARAM_ACTIVE, pid.LidOpenResumeCountdown == 0);
+    storeLidParam(LIDPARAM_ACTIVE, control.LidOpenResumeCountdown == 0);
     updateDisplay();
   }
   return ST_AUTO;
@@ -301,13 +301,13 @@ static state_t menuSetpoint(button_t button)
   if (button == BUTTON_ENTER)
   {
     lcdprint_P(PSTR("Set temperature:"), true);
-    editInt = pid.getSetPoint();
+    editInt = control.getSetPoint();
   }
   else if (button == BUTTON_LEAVE)
   {
     // Check to see if it is different because the setPoint 
     // field stores either the setPoint or manual mode
-    if (editInt != pid.getSetPoint())
+    if (editInt != control.getSetPoint())
       storeSetPoint(editInt);
   }
 
@@ -342,7 +342,7 @@ static state_t menuProbeOffset(button_t button)
   if (button == BUTTON_ENTER)
   {
     menuProbenameLine(probeIndex);
-    editInt = pid.Probes[probeIndex]->Offset;
+    editInt = control.Probes[probeIndex]->Offset;
   }
   else if (button == BUTTON_LEAVE)
     storeAndReportProbeOffset(probeIndex, editInt);
@@ -356,7 +356,7 @@ static state_t menuLidOpenOff(button_t button)
   if (button == BUTTON_ENTER)
   {
     lcdprint_P(PSTR("Lid open offset"), true);
-    editInt = pid.LidOpenOffset;
+    editInt = control.LidOpenOffset;
   }
   else if (button == BUTTON_LEAVE)
   {
@@ -372,7 +372,7 @@ static state_t menuLidOpenDur(button_t button)
   if (button == BUTTON_ENTER)
   {
     lcdprint_P(PSTR("Lid open timer"), true);
-    editInt = pid.getLidOpenDuration();
+    editInt = control.getLidOpenDuration();
   }
   else if (button == BUTTON_LEAVE)
   {
@@ -388,15 +388,15 @@ static state_t menuManualMode(button_t button)
   if (button == BUTTON_ENTER)
   {
     lcdprint_P(PSTR("Manual fan mode"), true);
-    editInt = pid.getManualOutputMode();
+    editInt = control.getManualOutputMode();
   }
   else if (button == BUTTON_LEAVE)
   {
     // Check to see if it is different because the setPoint 
     // field stores either the setPoint or manual mode
     boolean manual = (editInt != 0); 
-    if (manual != pid.getManualOutputMode())
-      storeSetPoint(manual ? 0 : pid.getSetPoint());
+    if (manual != control.getManualOutputMode())
+      storeSetPoint(manual ? 0 : control.getSetPoint());
   }
   menuBooleanEdit(button, NULL);
   return ST_AUTO;
@@ -423,11 +423,11 @@ static state_t menuMaxFanSpeed(button_t button)
   if (button == BUTTON_ENTER)
   {
     lcdprint_P(PSTR("Maximum auto fan"), true);
-    editInt = pid.getMaxFanSpeed();
+    editInt = control.getMaxFanSpeed();
   }
   else if (button == BUTTON_LEAVE)
   {
-    if (editInt != pid.getMaxFanSpeed())
+    if (editInt != control.getMaxFanSpeed())
       storeAndReportMaxFanSpeed(editInt);
   }
   
@@ -533,4 +533,5 @@ void HmMenuSystem::displayToast(char *msg)
 }
 
 HmMenuSystem Menus(MENU_DEFINITIONS, MENU_TRANSITIONS, &readButton);
+
 

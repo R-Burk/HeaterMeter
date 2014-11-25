@@ -42,3 +42,4 @@ private:
 
 extern SerialXorChecksum SerialX;
 #endif /* __SERIALXOR_H__ */
+

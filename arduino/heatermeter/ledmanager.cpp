@@ -69,3 +69,4 @@ void LedManager::setAssignment(unsigned char led, unsigned char stimulus)
   if (_leds[led].on == LEDACTION_OnSteady)
     _executor(led, LEDACTION_Off);
 }
+

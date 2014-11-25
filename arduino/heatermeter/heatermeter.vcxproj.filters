@@ -15,7 +15,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <None Include="heatermeter.ino" />
     <None Include="README.txt" />
   </ItemGroup>
   <ItemGroup>
@@ -49,19 +48,28 @@
     <ClInclude Include="ledmanager.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="grillpid.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="hmcore.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="grillpid_conf.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="econfig.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="tone_4khz.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fuzzycontrol.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="grillcontrol.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="pid.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="grill_conf.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="stackmon.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -84,13 +92,25 @@
     <ClCompile Include="ledmanager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="grillpid.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="econfig.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="tone_4khz.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="fuzzycontrol.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="grillcontrol.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="pid.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="heatermeter.ino">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="stackmon.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

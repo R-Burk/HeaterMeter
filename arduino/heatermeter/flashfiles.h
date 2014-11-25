@@ -22,3 +22,4 @@ const struct flash_file_t {
 };
 
 #endif /* __FLASHFILES_H__ */
+

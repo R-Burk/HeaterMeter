@@ -1,0 +1,805 @@
+// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+// GrillPid uses TIMER1 COMPB vector, as well as modifies the waveform
+// generation mode of TIMER1. Blower output pin needs to be a hardware PWM pin.
+// Fan output is 489Hz phase-correct PWM
+// Fan SMPS is 62khz inverted fast PWM
+// Servo output is 50Hz pulse duration
+
+#include <math.h>
+#include <string.h>
+#include <util/atomic.h>
+#include <digitalWriteFast.h>
+#include "strings.h"
+#include "grillcontrol.h"
+#include "hmcore.h"
+#include "stackmon.h"
+
+// For this calculation to work, ccpm()/8 must return a round number
+#define uSecToTicks(x) ((unsigned int)(clockCyclesPerMicrosecond() / 8) * x)
+
+// LERP percentage o into the unsigned range [A,B]. B - A must be < 655
+#define mappct(o, a, b)  (((b - a) * (unsigned int)o / 100) + a)
+
+#define DIFFMAX(x,y,d) ((x - y + d) <= (d*2U))
+
+#if defined(GRILL_SERVO_ENABLED)
+
+ISR(TIMER1_CAPT_vect)
+{
+  unsigned int cnt = OCR1B;
+  if (cnt != 0)
+  {
+    //OCR1B = cnt + control.getServoStep();
+    digitalWriteFast(PIN_SERVO, HIGH);
+    cnt = TCNT1;
+    OCR1B = cnt + control.getServoTarget();
+  }
+}
+
+ISR(TIMER1_COMPB_vect)
+{
+  digitalWriteFast(PIN_SERVO, LOW);
+}
+#endif
+
+static struct tagAdcState
+{
+  unsigned char cnt;      // count in accumulator
+  unsigned long accumulator;  // total
+  unsigned char discard;  // Discard this many ADC readings
+  unsigned int thisHigh;  // High this period
+  unsigned int thisLow;   // Low this period
+  unsigned int analogReads[NUM_ANALOG_INPUTS]; // Current values
+  unsigned int analogRange[NUM_ANALOG_INPUTS]; // high-low on last period
+#if defined(GRILL_DYNAMIC_RANGE)
+  bool useBandgapReference[NUM_ANALOG_INPUTS]; // Use 1.1V reference instead of AVCC
+  unsigned int bandgapAdc;                     // 10-bit adc reading of BG with AVCC ref
+#endif
+#if defined(NOISEDUMP_PIN)
+  unsigned int data[256];
+#endif
+} adcState;
+
+#if defined(NOISEDUMP_PIN)
+unsigned char g_NoisePin = NOISEDUMP_PIN;
+#endif
+
+ISR(ADC_vect)
+{
+  if (adcState.discard != 0)
+  {
+    --adcState.discard;
+    return;
+  }
+
+  unsigned int adc = ADC;
+#if defined(NOISEDUMP_PIN)
+  if ((ADMUX & 0x07) == g_NoisePin)
+    adcState.data[adcState.cnt] = adc;
+#endif
+  adcState.accumulator += adc;
+  ++adcState.cnt;
+
+  if (adcState.cnt != 0)
+  {
+    // Not checking the range on the 256th sample saves some clock cycles
+    // and helps offset the penalty of the end of period calculations
+    if (adc > adcState.thisHigh)
+      adcState.thisHigh = adc;
+    if (adc < adcState.thisLow)
+      adcState.thisLow = adc;
+  }
+  else
+  {
+    unsigned char pin = ADMUX & 0x0f;
+#if defined(GRILL_DYNAMIC_RANGE)
+    if (pin > NUM_ANALOG_INPUTS)
+    {
+      // Store only the last ADC value, giving the bandgap ~25ms to stabilize
+      adcState.bandgapAdc = adc;
+    }
+    else
+#endif // GRILL_DYNAMIC_RANGE
+    {
+      adcState.analogReads[pin] = adcState.accumulator >> 4;
+      adcState.analogRange[pin] = adcState.thisHigh - adcState.thisLow;
+    }
+    adcState.thisHigh = 0;
+    adcState.thisLow = 0xffff;
+    adcState.accumulator = 0;
+
+    ++pin;
+    if (pin >= NUM_ANALOG_INPUTS)
+      pin = 0;
+#if defined(GRILL_DYNAMIC_RANGE)
+    unsigned char newref =
+      adcState.useBandgapReference[pin] ? (INTERNAL << 6) : (DEFAULT << 6);
+    unsigned char curref = ADMUX & 0xc0;
+    // If switching references, allow time for AREF cap to charge
+    if (curref != newref)
+      adcState.discard = 48;  // 48 / 9615 samples/s = 5ms
+    else
+      adcState.discard = 2;
+
+    ADMUX = newref | pin;
+#else
+    ADMUX = (DEFAULT << 6) | pin;
+    adcState.discard = 2;
+#endif
+  }
+}
+
+unsigned int analogReadOver(unsigned char pin, unsigned char bits)
+{
+  unsigned int retVal;
+
+  ATOMIC_BLOCK(ATOMIC_FORCEON)
+  {
+    retVal = adcState.analogReads[pin];
+  }
+  return retVal >> (14 - bits);
+}
+
+unsigned int analogReadRange(unsigned char pin)
+{
+  unsigned int retVal;
+  ATOMIC_BLOCK(ATOMIC_FORCEON)
+  {
+    retVal = adcState.analogRange[pin];
+  }
+  return retVal;
+}
+
+#if defined(GRILL_DYNAMIC_RANGE)
+bool analogIsBandgapReference(unsigned char pin)
+{
+  return adcState.useBandgapReference[pin];
+}
+
+void analogSetBandgapReference(unsigned char pin, bool enable)
+{
+  adcState.useBandgapReference[pin] = enable;
+}
+#endif /* GRILL_DYNAMIC_RANGE */
+
+static void adcDump(void)
+{
+#if defined(NOISEDUMP_PIN)
+  static uint8_t x;
+  ++x;
+  if (x == 5)
+  {
+    x = 0;
+    ADCSRA = bit(ADEN) | bit(ADATE) | bit(ADPS2) | bit(ADPS1) | bit (ADPS0);
+    SerialX.print("HMLG,NOISE ");
+    for (unsigned int i=0; i<256; ++i)
+    {
+      SerialX.print(adcState.data[i], DEC);
+      SerialX.print(' ');
+    }
+    Serial_nl();
+    ADCSRA = bit(ADEN) | bit(ADATE) | bit(ADIE) | bit(ADPS2) | bit(ADPS1) | bit (ADPS0) | bit(ADSC);
+  }
+#endif
+}
+
+void calcExpMovingAverage(const float smooth, float *currAverage, float newValue)
+{
+  newValue = newValue - *currAverage;
+  *currAverage = *currAverage + (smooth * newValue);
+}
+
+void ProbeAlarm::updateStatus(int value)
+{
+  // Low: Arming point >= Thresh + 1.0f, Trigger point < Thresh
+  // A low alarm set for 100 enables at 101.0 and goes off at 99.9999...
+  if (getLowEnabled())
+  {
+    if (value >= (getLow() + 1))
+      Armed[ALARM_IDX_LOW] = true;
+    else if (value < getLow() && Armed[ALARM_IDX_LOW])
+      Ringing[ALARM_IDX_LOW] = true;
+  }
+
+  // High: Arming point < Thresh - 1.0f, Trigger point >= Thresh
+  // A high alarm set for 100 enables at 98.9999... and goes off at 100.0
+  if (getHighEnabled())
+  {
+    if (value < (getHigh() - 1))
+      Armed[ALARM_IDX_HIGH] = true;
+    else if (value >= getHigh() && Armed[ALARM_IDX_HIGH])
+      Ringing[ALARM_IDX_HIGH] = true;
+  }
+
+  if (control.isLidOpen())
+    Ringing[ALARM_IDX_LOW] = Ringing[ALARM_IDX_HIGH] = false;
+}
+
+void ProbeAlarm::setHigh(int value)
+{
+  setThreshold(ALARM_IDX_HIGH, value);
+}
+
+void ProbeAlarm::setLow(int value)
+{
+  setThreshold(ALARM_IDX_LOW, value);
+}
+
+void ProbeAlarm::setThreshold(unsigned char idx, int value)
+{
+  Armed[idx] = false;
+  Ringing[idx] = false;
+  /* 0 just means silence */
+  if (value == 0)
+    return;
+  Thresholds[idx] = value;
+}
+
+TempProbe::TempProbe(const unsigned char pin) :
+  _pin(pin), _tempStatus(TSTATUS_NONE)
+{
+}
+
+void TempProbe::loadConfig(struct __eeprom_probe *config)
+{
+  _probeType = config->probeType;
+  Offset = config->tempOffset;
+  memcpy(Steinhart, config->steinhart, sizeof(Steinhart));
+  Alarms.setLow(config->alarmLow);
+  Alarms.setHigh(config->alarmHigh);
+}
+
+void TempProbe::setProbeType(unsigned char probeType)
+{
+  _probeType = probeType;
+  _tempStatus = TSTATUS_NONE;
+  _hasTempAvg = false;
+}
+
+void TempProbe::calcTemp(unsigned int adcval)
+{
+  // Units 'A' = ADC value
+  if (control.getUnits() == 'A')
+  {
+    Temperature = adcval;
+    _tempStatus = TSTATUS_OK;
+    return;
+  }
+
+  // Ignore probes within 1 LSB of max
+  if (adcval > 1022 * pow(2, TEMP_OVERSAMPLE_BITS) || adcval == 0)
+    _tempStatus = TSTATUS_NONE;
+  else
+  {
+    const float ADCmax = 1023 * pow(2, TEMP_OVERSAMPLE_BITS);
+
+    if (_probeType == PROBETYPE_TC_ANALOG)
+    {
+      float mvScale = Steinhart[3];
+      // Commented out because there's no "divide by zero" exception so
+      // just allow undefined results to save prog space
+      //if (mvScale == 0.0f)
+      //  mvScale = 1.0f;
+      // If scale is <100 it is assumed to be mV/C with a 3.3V reference
+      if (mvScale < 100.0f)
+        mvScale = 3300.0f / mvScale;
+#if defined(GRILL_DYNAMIC_RANGE)
+      if (analogIsBandgapReference(_pin))
+      {
+        analogSetBandgapReference(_pin, adcval < (1000U * (unsigned char)pow(2, TEMP_OVERSAMPLE_BITS)));
+        mvScale /= 1023.0f / adcState.bandgapAdc;
+      }
+      else
+        analogSetBandgapReference(_pin, adcval < (300U * (unsigned char)pow(2, TEMP_OVERSAMPLE_BITS)));
+#endif
+      setTemperatureC(adcval / ADCmax * mvScale);
+    }
+    else {
+      float R, T;
+      // If you put the fixed resistor on the Vcc side of the thermistor, use the following
+      R = Steinhart[3] / ((ADCmax / (float)adcval) - 1.0f);
+      // If you put the thermistor on the Vcc side of the fixed resistor use the following
+      //R = Steinhart[3] * ADCmax / (float)Vout - Steinhart[3];
+
+      // Units 'R' = resistance, unless this is the pit probe (which should spit out Celsius)
+      if (control.getUnits() == 'R' && this != control.Probes[TEMP_PIT])
+      {
+        Temperature = R;
+        _tempStatus = TSTATUS_OK;
+        return;
+      };
+
+      // Compute degrees K
+      R = log(R);
+      T = 1.0f / ((Steinhart[2] * R * R + Steinhart[1]) * R + Steinhart[0]);
+
+      setTemperatureC(T - 273.15f);
+    } /* if PROBETYPE_INTERNAL */
+  } /* if ADCval */
+}
+
+void TempProbe::processPeriod(void)
+{
+  // Called once per measurement period after temperature has been calculated
+  if (hasTemperature())
+  {
+    if (!_hasTempAvg)
+    {
+      TemperatureAvg = Temperature;
+      _hasTempAvg = true;
+    }
+    else
+      calcExpMovingAverage(TEMPPROBE_AVG_SMOOTH, &TemperatureAvg, Temperature);
+    Alarms.updateStatus(Temperature);
+  }
+  else
+    Alarms.silenceAll();
+}
+
+void TempProbe::setTemperatureC(float T)
+{
+  // Sanity - anything less than -20C (-4F) or greater than 500C (932F) is rejected
+  if (T <= -20.0f)
+    _tempStatus = TSTATUS_LOW;
+  else if (T >= 500.0f)
+    _tempStatus = TSTATUS_HIGH;
+  else
+  {
+    if (control.getUnits() == 'F')
+      Temperature = (T * (9.0f / 5.0f)) + 32.0f;
+    else
+      Temperature = T;
+    Temperature += Offset;
+    _tempStatus = TSTATUS_OK;
+  }
+}
+
+void GrillControl::init(void) const
+{
+#if defined(GRILLPID_SERVO_ENABLED)
+  pinModeFast(PIN_SERVO, OUTPUT);
+
+  // CTC mode with ICR1 as TOP, 8 prescale, INT on COMPB and TOP (ICR
+  // Period set to SERVO_REFRESH
+  // If GrillPid is constructed statically this can't be done in the constructor
+  // because the Arduino core init is called after the constructor and will set
+  // the values back to the default
+  ICR1 = uSecToTicks(SERVO_REFRESH);
+  TCCR1A = 0;
+  TCCR1B = bit(WGM13) | bit(WGM12) | bit(CS11);
+  TIMSK1 = bit(ICIE1) | bit(OCIE1B);
+#endif
+  // Initialize ADC for free running mode at 125kHz
+#if defined(GRILL_DYNAMIC_RANGE)
+  // Start by measuring the bandgap reference for dynamic range scaling
+  ADMUX = (DEFAULT << 6) | 0b1110;
+#else
+  ADMUX = (DEFAULT << 6) | 0;
+#endif // GRILL_DYNAMIC_RANGE
+  ADCSRB = bit(ACME);
+  ADCSRA = bit(ADEN) | bit(ADATE) | bit(ADIE) | bit(ADPS2) | bit(ADPS1) | bit (ADPS0) | bit(ADSC);
+}
+
+void GrillControl::setOutputFlags(unsigned char value)
+{
+  _outputFlags = value;
+  // Timer2 Fast PWM
+  TCCR2A = bit(WGM21) | bit(WGM20);
+  if (bit_is_set(_outputFlags, PIDFLAG_FAN_FEEDVOLT))
+    TCCR2B = bit(CS20); // 62kHz
+  else
+    TCCR2B = bit(CS22) | bit(CS20); // 488Hz
+  // 7khz
+  //TCCR2B = bit(CS21);
+  // 61Hz
+  //TCCR2B = bit(CS22) | bit(CS21) | bit(CS20);
+  //Not using analogWrite so need to make sure pin is initialized
+  pinMode(PIN_BLOWER, OUTPUT);
+  //Make sure only one mode of operation has been specified
+  if (bit_is_set(_outputFlags,PIDFLAG_SERVO_THEN_FAN)) {
+    _outputFlags &= ~(1<<PIDFLAG_FAN_ONLY_MAX);
+    _outputFlags &= ~(1<<PIDFLAG_SERVO_ANY_MAX);
+  }
+  if (bit_is_set(_outputFlags,PIDFLAG_SERVO_ANY_MAX)) {
+    _outputFlags &= ~(1<<PIDFLAG_FAN_ONLY_MAX);
+  }
+  // setMaxPidOutput based on mode
+  if (bit_is_set(_outputFlags, PIDFLAG_SERVO_THEN_FAN))
+    _maxControlOutput = 200 - SERVO_FAN_OVERLAP;
+  else
+    _maxControlOutput = 100;
+}
+
+unsigned int GrillControl::countOfType(unsigned char probeType) const
+{
+  unsigned char retVal = 0;
+  for (unsigned char i=0; i<TEMP_COUNT; ++i)
+    if (Probes[i]->getProbeType() == probeType)
+      ++retVal;
+  return retVal;  
+}
+
+void GrillControl::fanVoltWrite(unsigned char val)
+{
+  if (_lastBlowerOutput == 0 ) {
+    //Disconnect pin from Timer 2B
+    TCCR2A = TCCR2A & ~bit(COM2B1);
+    //Turn off the Fan SMPS
+    digitalWriteFast(PIN_BLOWER, LOW);
+    return;
+  }
+
+  // Only chance to read max input voltage to board
+  if (OCR2B == 255) {
+    _inputVoltage = analogReadOver(APIN_FFEEDBACK,8);
+    SerialX.print("HMLG,");
+    SerialX.print("VOLT: input="); SerialX.print(_inputVoltage, DEC);
+    Serial_nl();
+  }
+
+  // Make sure pin is connected to PWM timer 2 channel B
+   TCCR2A |= bit(COM2B1);
+   //Set duty cycle for Timer2B that is controlling the fan SMPS
+   //Note this is actually off by 1 in fast PWM
+   //so real range is (0-255)+1/256 or 1/256 to 256/256
+   OCR2B = val;
+}
+
+void GrillControl::adjustFeedbackVoltage(void)
+{
+  if (_lastBlowerOutput != 0 && bit_is_set(_outputFlags, PIDFLAG_FAN_FEEDVOLT))
+  {
+    signed int newOutput;
+
+    // _lastBlowerOutput is the voltage we want on the feedback pin
+    // adjust _feedvoltLastOutput until the ffeedback == _lastBlowerOutput
+    unsigned char ffeedback = analogReadOver(APIN_FFEEDBACK, 8);
+    signed char error = _lastBlowerOutput - ffeedback;
+
+    //Gain control as the PWM output gets less the ratio of feedback to _feedvoltLastOutput gets huge
+    if (_feedvoltLastOutput > (16*128) )
+      newOutput = _feedvoltLastOutput + error*64;
+    else if (_feedvoltLastOutput > (8*128) )
+      newOutput = _feedvoltLastOutput + error*32;
+    else if (_feedvoltLastOutput > (4*128) )
+      newOutput = _feedvoltLastOutput + error*16;
+    else
+      newOutput = _feedvoltLastOutput + error*8;
+
+    if ( newOutput < 0 )
+      _feedvoltLastOutput = 0;
+    else
+      _feedvoltLastOutput = newOutput;
+
+#if defined(GRILLPID_FEEDVOLT_DEBUG)
+    SerialX.print("HMLG,");
+    SerialX.print("SMPS: desire="); SerialX.print(_lastBlowerOutput, DEC);
+    SerialX.print(" ffeed="); SerialX.print(ffeedback, DEC);
+    SerialX.print(" out="); SerialX.print(_feedvoltLastOutput/128, DEC); 
+    SerialX.print("."); SerialX.print(_feedvoltLastOutput & 127,DEC);
+    Serial_nl();
+#endif
+
+  }
+  else
+    _feedvoltLastOutput = _lastBlowerOutput;
+
+  if (_feedvoltLastOutput > 0)
+    fanVoltWrite(_feedvoltLastOutput/128);
+  else
+    fanVoltWrite(0);
+}
+
+inline unsigned char FeedvoltToAdc(float v)
+{
+  // Calculates what an 8 bit ADC value would be for the given voltage
+  const unsigned long R1 = 22000;
+  const unsigned long R2 = 68000;
+  // Scale the voltage by the voltage divder
+  // v * R1 / (R1 + R2) = pV
+  // Scale to ADC assuming 3.3V reference
+  // (pV / 3.3) * 256 = ADC
+  return ((v * R1 * 256) / ((R1 + R2) * 3.3));
+}
+
+inline void GrillControl::commitFanOutput(void)
+{
+  /* Long PWM period is 10 sec */
+  const unsigned int LONG_PWM_PERIOD = 10000;
+  const unsigned int PERIOD_SCALE = (LONG_PWM_PERIOD / TEMP_MEASURE_PERIOD);
+
+  if (bit_is_set(_outputFlags, PIDFLAG_FAN_ONLY_MAX) && _controlOutput < 100)
+    _fanSpeed = 0;
+  else
+  {
+    unsigned char max;
+    if (_pitStartRecover == PIDSTARTRECOVER_STARTUP)
+      max = _maxStartupFanSpeed;
+    else
+      max = _maxFanSpeed;
+    
+    if (bit_is_set(_outputFlags, PIDFLAG_SERVO_THEN_FAN)) 
+    {
+      //Make sure _fanSpeed only sees 0 - 100 and does nothing till until _pidOutput
+      //is in the overlap region or higher
+      if  (_controlOutput > (100 - SERVO_FAN_OVERLAP) )
+        _fanSpeed = (unsigned int)(_controlOutput - (100 - SERVO_FAN_OVERLAP)) * max / 100;
+      else
+        _fanSpeed = 0;
+    }
+    else 
+    {
+      _fanSpeed = (unsigned int)_controlOutput * max / 100;
+    }
+  }
+
+  /* For anything above _minFanSpeed, do a nomal PWM write.
+     For below _minFanSpeed we use a "long pulse PWM", where
+     the pulse is 10 seconds in length.  For each percent we are
+     emulating, run the fan for one interval. */
+  if (_fanSpeed >= _minFanSpeed)
+    _longPwmTmr = 0;
+  else
+  {
+    // Simple PWM, ON for first [FanSpeed] intervals then OFF
+    // for the remainder of the period
+    if (((PERIOD_SCALE * _fanSpeed / _minFanSpeed) > _longPwmTmr))
+      _fanSpeed = _minFanSpeed;
+    else
+      _fanSpeed = 0;
+
+    if (++_longPwmTmr > (PERIOD_SCALE - 1))
+      _longPwmTmr = 0;
+  }  /* long PWM */
+
+  if (bit_is_set(_outputFlags, PIDFLAG_INVERT_FAN))
+    _fanSpeed = _maxFanSpeed - _fanSpeed;
+
+  // 0 is always 0
+  if (_fanSpeed == 0)
+    _lastBlowerOutput = 0;
+  else
+  {
+    bool needBoost = _lastBlowerOutput == 0;
+    if (bit_is_set(_outputFlags, PIDFLAG_FAN_FEEDVOLT))
+      if (_inputVoltage)
+        _lastBlowerOutput = mappct(_fanSpeed, FeedvoltToAdc(5.0f), _inputVoltage);
+      else
+      _lastBlowerOutput = mappct(_fanSpeed, FeedvoltToAdc(5.0f), FeedvoltToAdc(12.1f));
+    else
+      _lastBlowerOutput = mappct(_fanSpeed, 0, 255);
+    // If going from 0% to non-0%, turn the blower fully on for one period
+    // to get it moving (boost mode)
+    if (needBoost)
+    {
+      fanVoltWrite(255);
+      _feedvoltLastOutput = 255*128;
+      return;
+    }
+  }
+  adjustFeedbackVoltage();
+}
+
+inline void GrillControl::commitServoOutput(void)
+{
+#if defined(GRILL_SERVO_ENABLED)
+  unsigned char output;
+  if (bit_is_set(_outputFlags, PIDFLAG_SERVO_ANY_MAX) && _controlOutput > 0)
+    output = 100;
+  else
+    output = _controlOutput;
+
+  //Make sure the servo doesn't get anything over 100 when PIDFLAG_SERVO_THEN_FAN is in use
+  constrain(output,0,100);
+
+  if (bit_is_set(_outputFlags, PIDFLAG_INVERT_SERVO))
+    output = 100 - output;
+
+  // Get the output speed in 10x usec by LERPing between min and max
+  output = mappct(output, _minServoPos, _maxServoPos);
+  // _servoTarget could be 0 if this is the first set, set to min and slope from there
+  if (_servoTarget == 0)
+    _servoTarget = uSecToTicks(10U * _minServoPos);
+  int targetTicks = uSecToTicks(10U * output);
+  //int targetDiff = targetTicks - _servoTarget;
+  ATOMIC_BLOCK(ATOMIC_FORCEON)
+  {
+    //_servoStep = targetDiff / (TEMP_MEASURE_PERIOD / (SERVO_REFRESH / 1000));
+    //OCR1B = _servoTarget + _servoStep;
+    OCR1B = targetTicks;
+  }
+  _servoTarget = targetTicks;
+#endif
+}
+
+inline void GrillControl::commitControlOutput(void)
+{
+  calcExpMovingAverage(CONTROLOUTPUT_AVG_SMOOTH, &ControlOutputAvg, _controlOutput);
+  commitFanOutput();
+  commitServoOutput();
+}
+
+boolean GrillControl::isAnyFoodProbeActive(void) const
+{
+  unsigned char i;
+  for (i=TEMP_FOOD1; i<TEMP_COUNT; i++)
+    if (Probes[i]->hasTemperature())
+      return true;
+      
+  return false;
+}
+  
+void GrillControl::resetLidOpenResumeCountdown(void)
+{
+  LidOpenResumeCountdown = _lidOpenDuration;
+  _pitStartRecover = PIDSTARTRECOVER_RECOVERY;
+}
+
+void GrillControl::setSetPoint(int value)
+{
+  _setPoint = value;
+  _pitStartRecover = PIDSTARTRECOVER_STARTUP;
+  _manualOutputMode = false;
+  LidOpenResumeCountdown = 0;
+}
+
+void GrillControl::setControlOutput(int value)
+{
+  _manualOutputMode = true;
+  _controlOutput = constrain(value, 0, _maxControlOutput);
+  LidOpenResumeCountdown = 0;
+}
+
+void GrillControl::setLidOpenDuration(unsigned int value)
+{
+  _lidOpenDuration = (value > LIDOPEN_MIN_AUTORESUME) ? value : LIDOPEN_MIN_AUTORESUME;
+}
+
+
+void GrillControl::status(void) const
+{
+#if defined(GRILL_SERIAL_ENABLED)
+  SerialX.print(getSetPoint(), DEC);
+  Serial_csv();
+
+  for (unsigned char i=0; i<TEMP_COUNT; ++i)
+  {
+    if (Probes[i]->hasTemperature())
+      SerialX.print(Probes[i]->Temperature, 1);
+    else
+      Serial_char('U');
+    Serial_csv();
+  }
+
+  //Limit ControlOutput display for SERVO_THEN_FAN mode. Saves redoing graphs.
+  SerialX.print(constrain(getControlOutput(),0,100), DEC);
+  Serial_csv();
+  SerialX.print((int)ControlOutputAvg, DEC);
+  Serial_csv();
+  SerialX.print(LidOpenResumeCountdown, DEC);
+  Serial_csv();
+  SerialX.print(getFanSpeed(), DEC);
+
+  Debug_begin();
+  SerialX.print(StackCount(), DEC);
+  Debug_end();
+#endif
+}
+
+boolean GrillControl::doWork(void)
+{
+  unsigned int elapsed = millis() - _lastWorkMillis;
+  if (elapsed < (TEMP_MEASURE_PERIOD / TEMP_OUTADJUST_CNT))
+    return false;
+  _lastWorkMillis = millis();
+
+  if (_periodCounter < (TEMP_OUTADJUST_CNT-1))
+  {
+    ++_periodCounter;
+    adjustFeedbackVoltage();
+    return false;
+  }
+  _periodCounter = 0;
+
+#if defined(GRILL_CALC_TEMP) 
+  for (unsigned char i=0; i<TEMP_COUNT; i++)
+	{
+    if (Probes[i]->getProbeType() == PROBETYPE_INTERNAL ||
+        Probes[i]->getProbeType() == PROBETYPE_TC_ANALOG)
+        Probes[i]->calcTemp(analogReadOver(Probes[i]->getPin(), 10+TEMP_OVERSAMPLE_BITS));
+		Probes[i]->processPeriod();
+	}
+
+  if (!_manualOutputMode)
+  {
+    // Always calculate the output
+    // calcPidOutput() will bail if it isn't supposed to be in control
+#if defined(GRILL_USE_FLC)
+    _controlOutput = flc.doWork();
+#else
+    _controlOutput = pid.calcPidOutput();
+#endif
+
+    int pitTemp = (int)Probes[TEMP_PIT]->Temperature;
+    if ((pitTemp >= _setPoint) &&
+      (_lidOpenDuration - LidOpenResumeCountdown > LIDOPEN_MIN_AUTORESUME))
+    {
+      // When we first achieve temperature, reduce any I sum we accumulated during startup
+      // If we actually neded that sum to achieve temperature we'll rebuild it, and it
+      // prevents bouncing around above the temperature when you first start up
+      //if (_pitStartRecover == PIDSTARTRECOVER_STARTUP)
+      //{
+        //_pidCurrent[PIDI] *= 0.50f;
+      //}
+      _pitStartRecover = PIDSTARTRECOVER_NORMAL;
+      LidOpenResumeCountdown = 0;
+    }
+    else if (LidOpenResumeCountdown != 0)
+    {
+      LidOpenResumeCountdown = LidOpenResumeCountdown - (TEMP_MEASURE_PERIOD / 1000);
+    }
+    // If the pit temperature has been reached
+    // and if the pit temperature is [lidOpenOffset]% less that the setpoint
+    // and if the fan has been running less than 90% (more than 90% would indicate probable out of fuel)
+    // Note that the code assumes we're not currently counting down
+    else if (isPitTempReached() && 
+      (((_setPoint-pitTemp)*100/_setPoint) >= (int)LidOpenOffset) &&
+      ((int)ControlOutputAvg < 90))
+    {
+      resetLidOpenResumeCountdown();
+    }
+  }   /* if !manualFanMode */
+#endif
+
+  commitControlOutput();
+  adcDump();
+  return true;
+}
+
+void GrillControl::controlStatus(void) const
+{
+#if defined(GRILL_SERIAL_ENABLED)
+  TempProbe const* const pit = Probes[TEMP_PIT];
+  if (pit->hasTemperature())
+  {
+    print_P(PSTR("HMPS"CSV_DELIMITER));
+    for (unsigned char i=PIDB; i<=PIDD; ++i)
+    {
+#if defined(GRILL_USE_PID)
+      SerialX.print(pid.getPidCurrent(i), 2);
+#else
+      SerialX.print(0, 2);
+#endif
+      Serial_csv();
+    }
+
+    SerialX.print(pit->Temperature - pit->TemperatureAvg, 2);
+    //Added for additional rrd logging of PID params
+    for (unsigned char i=PIDP; i<=PIDD; ++i)
+    {
+      Serial_csv();
+#if defined(GRILL_USE_PID)
+      SerialX.print(pid.Pid[i], 10);
+#else
+      SerialX.print(0, 10);
+#endif
+    }
+
+    Serial_nl();
+  }
+#endif
+}
+
+void GrillControl::setUnits(char units)
+{
+  switch (units)
+  {
+    case 'A':
+    case 'C':
+    case 'F':
+    case 'R':
+      _units = units;
+      break;
+  }
+}
+

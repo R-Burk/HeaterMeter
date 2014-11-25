@@ -111,3 +111,4 @@ void MenuSystem::doWork(void)
 
   setState(newState);
 }
+
