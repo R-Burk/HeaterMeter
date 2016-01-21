@@ -172,6 +172,7 @@ private:
   unsigned char _feedvoltLastOutput;
   // Desired fan target (0-255)
   unsigned char _lastBlowerOutput;
+  unsigned char _fanStartBoost;
   // Target servo position (ticks)
   unsigned int _servoTarget;
   unsigned char _servoStepTicks;

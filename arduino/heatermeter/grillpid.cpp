@@ -417,17 +417,26 @@ void GrillPid::setOutputFlags(unsigned char value)
     adcState.cnt = adcState.top;
     adcState.accumulator = 0;
   }
-
-  // Timer2 Fast PWM
-  TCCR2A = bit(WGM21) | bit(WGM20);
-  if (bit_is_set(value, PIDFLAG_FAN_FEEDVOLT))
-    TCCR2B = bit(CS20); // 62kHz
-  else
-    TCCR2B = bit(CS22) | bit(CS20); // 488Hz
-  // 7khz
-  //TCCR2B = bit(CS21);
-  // 61Hz
-  //TCCR2B = bit(CS22) | bit(CS21) | bit(CS20);
+#if defined(FAN_30HZ)
+  //TCCR2A = bit(WGM21) | bit(WGM20);  // Timer2 Fast PWM
+  TCCR2A = bit(WGM20); // Timer 2 Phase Correct PWM
+  //TCCR2B = bit(CS20); // 62kHz (fast) 31kHz (phase correct)
+  //TCCR2B = bit(CS21); // 7.8khz (fast) 3.9kHz (phase correct)
+  //TCCR2B = bit(CS21) | bit(CS20); // 1953Hz (fast) 980Hz (phase correct)
+  //TCCR2B = bit(CS22); // 976Hz (fast) 490Hz (phase correct)
+  //TCCR2B = bit(CS22) | bit(CS20); // 488Hz (fast) 245Hz (phase correct)
+  //TCCR2B = bit(CS22) | bit(CS21); // 244Hz (fast) 122Hz (phase correct)
+  TCCR2B = bit(CS22) | bit(CS21) | bit(CS20); // 61Hz 30.6Hz (phase correct)
+#endif
+#if defined(FAN_20KHZ)
+  TCCR2A = bit(WGM21) | bit(WGM20);  // Timer2 Fast PWM
+  TCCR2B = bit(WGM22) | bit(CS21); // 7.8khz (fast), top compare to OCR2A
+  OCR2A = 100;  // 20khz instead of 7.8khz
+#endif
+#if defined(FAN_31KHZ)
+  TCCR2A = bit(WGM20); // Timer 2 Phase Correct PWM
+  TCCR2B = bit(CS20); // 62kHz (fast) 31kHz (phase correct)
+#endif
 }
 
 void GrillPid::servoRangeChanged(void)
@@ -458,7 +467,7 @@ unsigned int GrillPid::countOfType(unsigned char probeType) const
   return retVal;  
 }
 
-/* Calucluate the desired output percentage using the proportional–integral-derivative (PID) controller algorithm */
+/* Calculate the desired output percentage using the proportional–integral-derivative (PID) controller algorithm */
 inline void GrillPid::calcPidOutput(void)
 {
   unsigned char lastOutput = _pidOutput;
@@ -495,29 +504,21 @@ inline void GrillPid::calcPidOutput(void)
 
 void GrillPid::adjustFeedbackVoltage(void)
 {
-  if (_lastBlowerOutput != 0 && bit_is_set(_outputFlags, PIDFLAG_FAN_FEEDVOLT))
-  {
-    // _lastBlowerOutput is the voltage we want on the feedback pin
-    // adjust _feedvoltLastOutput until the ffeedback == _lastBlowerOutput
-    unsigned char ffeedback = analogReadOver(APIN_FFEEDBACK, 8);
-    int error = ((int)_lastBlowerOutput - (int)ffeedback);
-    int newOutput = (int)_feedvoltLastOutput + (error / 2);
-    _feedvoltLastOutput = constrain(newOutput, 1, 255);
-
-#if defined(GRILLPID_FEEDVOLT_DEBUG)
-    SerialX.print("HMLG,");
-    SerialX.print("SMPS: ffeed="); SerialX.print(ffeedback, DEC);
-    SerialX.print(" out="); SerialX.print(newOutput, DEC);
-    SerialX.print(" fdesired="); SerialX.print(_lastBlowerOutput, DEC);
-    Serial_nl();
+  if ( _fanStartBoost > 0) {
+    _fanStartBoost--;
+#if defined(FAN_30HZ) || defined(FAN_31KHZ)
+    analogWrite(PIN_BLOWER, 255);
+#endif
+#if defined(FAN_20KHZ)
+    analogWrite(PIN_BLOWER, 100);
 #endif
   }
-  else
-    _feedvoltLastOutput = _lastBlowerOutput;
-
-  analogWrite(PIN_BLOWER, _feedvoltLastOutput);
+  else {
+    analogWrite(PIN_BLOWER, _lastBlowerOutput);
+  }
 }
 
+#if 0
 inline unsigned char FeedvoltToAdc(float v)
 {
   // Calculates what an 8 bit ADC value would be for the given voltage
@@ -529,6 +530,7 @@ inline unsigned char FeedvoltToAdc(float v)
   // (pV / 3.3) * 256 = ADC
   return ((v * R1 * 256) / ((R1 + R2) * 3.3f));
 }
+#endif
 
 inline void GrillPid::commitFanOutput(void)
 {
@@ -578,21 +580,22 @@ inline void GrillPid::commitFanOutput(void)
     _lastBlowerOutput = 0;
   else
   {
-    bool needBoost = _lastBlowerOutput == 0;
-    if (bit_is_set(_outputFlags, PIDFLAG_FAN_FEEDVOLT))
-      _lastBlowerOutput = mappct(_fanSpeed, FeedvoltToAdc(5.0f), FeedvoltToAdc(12.1f));
-    else
-      _lastBlowerOutput = mappct(_fanSpeed, 0, 255);
     // If going from 0% to non-0%, turn the blower fully on for one period
     // to get it moving (boost mode)
-    if (needBoost)
+    if (_lastBlowerOutput == 0)
     {
-      analogWrite(PIN_BLOWER, 255);
-      // give the FFEEDBACK control a high starting point so when it reads
-      // for the first time and sees full voltage it doesn't turn off
-      _feedvoltLastOutput = 128;
-      return;
+      // some fans don't get up  to speed fast enough for PWM to keep running
+      _fanStartBoost = TEMP_OUTADJUST_CNT + 1;
     }
+    // Make sure we don't drive fan lower than user has indicated PWM can handle
+#if defined(FAN_30HZ) || defined(FAN_31KHZ)
+      unsigned char minPWM = mappct(_fanMinSpeed, 1, 254);
+      _lastBlowerOutput = mappct(_fanSpeed, minPWM, 254);
+#endif
+#if defined(FAN_20KHZ)
+      unsigned char minPWM = mappct(_fanMinSpeed, 1, 100);
+      _lastBlowerOutput = mappct(_fanSpeed, minPWM, 100);
+#endif
   }
   adjustFeedbackVoltage();
 }
@@ -686,7 +689,6 @@ void GrillPid::setSetPoint(int value)
   _setPoint = value;
   _pitStartRecover = PIDSTARTRECOVER_STARTUP;
   _manualOutputMode = false;
-  _pidCurrent[PIDI] = 0.0f;
   LidOpenResumeCountdown = 0;
 }
 

@@ -5,6 +5,9 @@
 #define GRILLPID_SERVO_ENABLED
 #define GRILLPID_DYNAMIC_RANGE
 //#define GRILLPID_FEEDVOLT_DEBUG
+#define FAN_30HZ
+//#define FAN_20KHZ
+//#define FAN_31KHZ
 
 #define TEMP_PIT    0
 #define TEMP_FOOD1  1
