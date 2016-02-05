@@ -1,4 +1,4 @@
-// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+﻿// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
 // GrillPid uses TIMER1 COMPB vector, as well as modifies the waveform
 // generation mode of TIMER1. Blower output pin needs to be a hardware PWM pin.
 // Fan output is 489Hz phase-correct PWM
@@ -28,26 +28,30 @@ ISR(TIMER1_CAPT_vect)
   if (nextStep != 0)
   {
     digitalWriteFast(PIN_SERVO, HIGH);
-    OCR1B = nextStep;
+    // Add the current timer1 count to offset the delay of calculating
+    // the next move, and any interrupt latency due to the ADC code
+    OCR1B = TCNT1 + nextStep;
   }
 }
 
-ISR(TIMER1_COMPB_vect)
+ISR(TIMER1_COMPB_vect, ISR_NAKED)
 {
   digitalWriteFast(PIN_SERVO, LOW);
+  asm("reti\n");
 }
 #endif
 
 static struct tagAdcState
 {
-  unsigned char top;      // Number of samples to take per reading
-  unsigned char cnt;      // count left to accumulate
+  unsigned char top;       // Number of samples to take per reading
+  unsigned char cnt;       // count left to accumulate
   unsigned long accumulator;  // total
-  unsigned char discard;  // Discard this many ADC readings
-  unsigned int thisHigh;  // High this period
-  unsigned int thisLow;   // Low this period
-  unsigned int analogReads[NUM_ANALOG_INPUTS]; // Current values
-  unsigned int analogRange[NUM_ANALOG_INPUTS]; // high-low on last period
+  unsigned char discard;   // Discard this many ADC readings
+  unsigned char thisHigh;  // High this period
+  unsigned char thisLow;   // Low this period
+  unsigned char pin;       // pin for which these readings were made
+  unsigned long analogReads[NUM_ANALOG_INPUTS]; // Current values
+  unsigned char analogRange[NUM_ANALOG_INPUTS]; // high-low on last period
 #if defined(GRILLPID_DYNAMIC_RANGE)
   bool useBandgapReference[NUM_ANALOG_INPUTS]; // Use 1.1V reference instead of AVCC
   unsigned int bandgapAdc;                     // 10-bit adc reading of BG with AVCC ref
@@ -66,25 +70,40 @@ ISR(ADC_vect)
   if (adcState.discard != 0)
   {
     --adcState.discard;
+    // Actually do the calculations for the previous set of reads while in the
+    // discard period of the next set of reads. Break the code up into chunks
+    // of roughly the same number of clock cycles.
+    if (adcState.discard == 1)
+    {
+      adcState.analogReads[adcState.pin] = adcState.accumulator;
+      adcState.analogRange[adcState.pin] = adcState.thisHigh - adcState.thisLow;
+    }
+    else if (adcState.discard == 0)
+    {
+      adcState.thisHigh = 0;
+      adcState.accumulator = 0;
+      adcState.thisLow = 0xff;
+      adcState.cnt = adcState.top;
+      adcState.pin = ADMUX & 0x0f;
+    }
     return;
   }
 
-  --adcState.cnt;
-  unsigned int adc = ADC;
-#if defined(NOISEDUMP_PIN)
-  if ((ADMUX & 0x07) == g_NoisePin)
-    adcState.data[adcState.cnt] = adc;
-#endif
-  adcState.accumulator += adc;
-
   if (adcState.cnt != 0)
   {
-    // Not checking the range on the 256th sample saves some clock cycles
-    // and helps offset the penalty of the end of period calculations
-    if (adc > adcState.thisHigh)
-      adcState.thisHigh = adc;
-    if (adc < adcState.thisLow)
-      adcState.thisLow = adc;
+    --adcState.cnt;
+    unsigned int adc = ADC;
+#if defined(NOISEDUMP_PIN)
+    if ((ADMUX & 0x07) == g_NoisePin)
+      adcState.data[adcState.cnt] = adc;
+#endif
+    adcState.accumulator += adc;
+
+    unsigned char a = adc >> 2;
+    if (a > adcState.thisHigh)
+      adcState.thisHigh = a;
+    if (a < adcState.thisLow)
+      adcState.thisLow = a;
   }
   else
   {
@@ -93,19 +112,9 @@ ISR(ADC_vect)
     if (pin > NUM_ANALOG_INPUTS)
     {
       // Store only the last ADC value, giving the bandgap ~25ms to stabilize
-      adcState.bandgapAdc = adc;
+      adcState.bandgapAdc = ADC;
     }
-    else
 #endif // GRILLPID_DYNAMIC_RANGE
-    {
-      // Scale up to 256 samples then divide by 2^4 for 14 bit oversample
-      adcState.analogReads[pin] = adcState.accumulator * 16 / adcState.top;
-      adcState.analogRange[pin] = adcState.thisHigh - adcState.thisLow;
-    }
-    adcState.thisHigh = 0;
-    adcState.thisLow = 0xffff;
-    adcState.accumulator = 0;
-    adcState.cnt = adcState.top;
 
     ++pin;
     if (pin >= NUM_ANALOG_INPUTS)
@@ -130,22 +139,19 @@ ISR(ADC_vect)
 
 unsigned int analogReadOver(unsigned char pin, unsigned char bits)
 {
-  unsigned int retVal;
+  unsigned long a;
   ATOMIC_BLOCK(ATOMIC_FORCEON)
   {
-    retVal = adcState.analogReads[pin];
+    a = adcState.analogReads[pin];
   }
+  // Scale up to 256 samples then divide by 2^4 for 14 bit oversample
+  unsigned int retVal = a * 16 / adcState.top;
   return retVal >> (14 - bits);
 }
 
-unsigned int analogReadRange(unsigned char pin)
+unsigned char analogReadRange(unsigned char pin)
 {
-  unsigned int retVal;
-  ATOMIC_BLOCK(ATOMIC_FORCEON)
-  {
-    retVal = adcState.analogRange[pin];
-  }
-  return retVal;
+  return adcState.analogRange[pin];
 }
 
 #if defined(GRILLPID_DYNAMIC_RANGE)
@@ -414,8 +420,7 @@ void GrillPid::setOutputFlags(unsigned char value)
   ATOMIC_BLOCK(ATOMIC_FORCEON)
   {
     adcState.top = newTop;
-    adcState.cnt = adcState.top;
-    adcState.accumulator = 0;
+    adcState.discard = 3;
   }
 #if defined(FAN_30HZ)
   //TCCR2A = bit(WGM21) | bit(WGM20);  // Timer2 Fast PWM
@@ -491,7 +496,11 @@ inline void GrillPid::calcPidOutput(void)
   // IIIII = fan speed percent per degree of accumulated error
   // anti-windup: Make sure we only adjust the I term while inside the proportional control range
   if ((error > 0 && lastOutput < 100) || (error < 0 && lastOutput > 0))
+  {
     _pidCurrent[PIDI] += Pid[PIDI] * error;
+    // I term can never be negative, because if curr = set, then P and D are 0, so I must be output
+    if (_pidCurrent[PIDI] < 0.0f) _pidCurrent[PIDI] = 0.0f;
+  }
 
   // DDDDD = fan speed percent per degree of change over TEMPPROBE_AVG_SMOOTH period
   _pidCurrent[PIDD] = Pid[PIDD] * (Probes[TEMP_CTRL]->TemperatureAvg - currentTemp);
@@ -642,13 +651,15 @@ inline void GrillPid::commitServoOutput(void)
   output = mappct(output, _servoMinPos, _servoMaxPos);
   unsigned int targetTicks = uSecToTicks(10U * output);
 #if defined(SERVO_MIN_THRESH)
+  if (_servoHoldoff < 0xff)
+    ++_servoHoldoff;
   // never pulse the servo if change isn't needed
   if (_servoTarget == targetTicks)
     return;
 
   // and only trigger the servo if a large movement is needed or holdoff expired
-  if (!DIFFMAX(_servoTarget, targetTicks, uSecToTicks(SERVO_MIN_THRESH)) ||
-    (++_servoHoldoff >= SERVO_MAX_HOLDOFF))
+  boolean isBigMove = !DIFFMAX(_servoTarget, targetTicks, uSecToTicks(SERVO_MIN_THRESH));
+  if (isBigMove || _servoHoldoff > SERVO_MAX_HOLDOFF)
 #endif
   {
     ATOMIC_BLOCK(ATOMIC_FORCEON)
@@ -766,11 +777,8 @@ boolean GrillPid::doWork(void)
     // calcPidOutput() will bail if it isn't supposed to be in control
     calcPidOutput();
     
-    int pitTemp = (int)Probes[TEMP_CTRL]->Temperature;
-    float trueDeriv = pitTemp - Probes[TEMP_CTRL]->TemperatureAvg;
-    trueDeriv *= 2; // degrees per minute form
-        
-    if ((pitTemp >= _setPoint) &&
+    int tempDiff = _setPoint - (int)Probes[TEMP_CTRL]->Temperature;
+    if ((tempDiff <= 0) &&
       (_lidOpenDuration - LidOpenResumeCountdown > LIDOPEN_MIN_AUTORESUME))
     {
       // When we first achieve temperature, reduce any I sum we accumulated during startup
@@ -792,7 +800,7 @@ boolean GrillPid::doWork(void)
     // and if the fan has been running less than 90% (more than 90% would indicate probable out of fuel)
     // Note that the code assumes we're not currently counting down
     else if (isPitTempReached() && 
-      (((_setPoint-pitTemp)*100/_setPoint) >= (int)LidOpenOffset) &&
+      ((tempDiff*100/_setPoint) >= (int)LidOpenOffset) &&
       ((int)PidOutputAvg < 90))
     {
       resetLidOpenResumeCountdown();
