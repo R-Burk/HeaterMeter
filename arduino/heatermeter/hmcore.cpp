@@ -1229,7 +1229,7 @@ static void newTempsAvail(void)
   // receivers can tell what the value was that caused the alarm
   checkAlarms();
 
-  if (g_LogPidInternals)
+  //if (g_LogPidInternals) -RCB
     pid.pidStatus();
 
   if ((pidCycleCount % 0x04) == 1)
