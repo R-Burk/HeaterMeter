@@ -60,6 +60,8 @@ static const struct __eeprom_data {
   unsigned char lcdBacklight; // in PWM (max 100)
 #ifdef HEATERMETER_RFM12
   unsigned char rfMap[TEMP_COUNT];
+#else
+  unsigned char blank[TEMP_COUNT];  //maintains alignment if switching compiled options
 #endif
   char pidUnits;
   unsigned char fanMinSpeed;  // in percent
@@ -83,6 +85,8 @@ static const struct __eeprom_data {
   50,   // lcd backlight (%)
 #ifdef HEATERMETER_RFM12
   { RFSOURCEID_ANY, RFSOURCEID_ANY, RFSOURCEID_ANY, RFSOURCEID_ANY },  // rfMap
+#else
+  { 255, 255, 255, 255 },  // blank space ( 255 keeps from using up a write)
 #endif
   'F',  // Units
   0,    // min fan speed
