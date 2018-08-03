@@ -782,7 +782,8 @@ void GrillPid::status(void)
   for (unsigned char i=0; i<TEMP_COUNT; ++i)
   {
     if (Probes[i]->hasTemperature())
-      SerialX.print(Probes[i]->Temperature, 1);
+      // Change for 2 digits after decimal. Hopefully will help relay and peaks - RCB
+      SerialX.print(Probes[i]->Temperature, 2);  
     else
       // Butterworth filter display unless probe in use
       if (i == 3) {
