@@ -384,6 +384,10 @@ void GrillPid::init(void)
   ADCSRA = bit(ADEN) | bit(ADATE) | bit(ADIE) | bit(ADPS2) | bit(ADPS1) | bit (ADPS0) | bit(ADSC);
 
   updateControlProbe();
+
+  //Butterworth
+  //Setting miss high so filters will be initted first time a pit temp shows up
+  _pidMissRB = 255;
 }
 
 void __attribute__ ((noinline)) GrillPid::updateControlProbe(void)
@@ -472,24 +476,75 @@ unsigned int GrillPid::countOfType(unsigned char probeType) const
   return retVal;  
 }
 
+void GrillPid::setPidPeriodRB(unsigned char value)
+{
+  if (value < MIN_FILTER_TIME || value > MAX_FILTER_TIME)
+    value = 5;
+
+  unsigned char buckets, remainder;
+  buckets = FILTER_TIME / value;
+  remainder = FILTER_TIME % value;
+  if ( remainder > 5 )
+    buckets++;
+  _filterLengthRB = buckets;
+
+  _pidPeriodRB = value;
+}
+
 /* Calculate the desired output percentage using the proportional–integral-derivative (PID) controller algorithm */
 inline void GrillPid::calcPidOutput(void)
 {
   unsigned char lastOutput = DNSCALE(_pidOutput);
 
   // If the pit probe is registering 0 degrees, don't jack the fan up to MAX
-  if (!Probes[TEMP_CTRL]->hasTemperature())
+  if (!Probes[TEMP_CTRL]->hasTemperature()) {
+    _pidMissRB = (_pidMissRB < 255) ? (_pidMissRB++) : ( 255 );
     return;
+  }
+  
+  //Lets see if temp measurements and pid cals are less spastic when spaced a bit
+  if (_pidPeriodCounterRB < _pidPeriodRB) {
+    _pidPeriodCounterRB++;
+    return;
+  }
+  _pidPeriodCounterRB = 0;
+  
+  float currentTemp, derivative, error;
+  //InputFilter is a 2nd order butterworth filter
+  currentTemp = Probes[TEMP_CTRL]->Temperature;
+  // See if we missed temp readings too many times and should reinitialize
+  if (_pidMissRB < 60 ) 
+  {
+    currentTemp = InputFilter.add(currentTemp);
+    //shuffle filter buckets
+    for (unsigned char i=FILTER_SIZE-1; i>0; i--)
+    {
+      _filterBucketsRB[i] = _filterBucketsRB[i-1];
+    }
+  } 
+  else 
+  {
+    currentTemp = InputFilter.init(currentTemp);
+    //initial fill filter buckets
+    for (unsigned char i=FILTER_SIZE-1; i>0; i--)
+    {
+      _filterBucketsRB[i] = currentTemp;
+    }
+  }
+  _pidMissRB = 0;
 
-  float currentTemp = Probes[TEMP_CTRL]->Temperature;
-  float error;
+
+  _filterBucketsRB[0] = currentTemp;
+ 
   error = _setPoint - currentTemp;
 
   // PPPPP = fan speed percent per degree of error
   _pidCurrent[PIDP] = Pid[PIDP] * error;
 
-  // DDDDD = fan speed percent per degree of change over TEMPPROBE_AVG_SMOOTH period
-  _pidCurrent[PIDD] = Pid[PIDD] * (Probes[TEMP_CTRL]->TemperatureAvg - currentTemp);
+  // DDDDD = fan speed percent per degree of change over _pidPeriodRB * 2
+  // Derivative is calced against two time periods of the InputFilter ( 2 x PID_PERIOD seconds)
+  derivative = _filterBucketsRB[_filterLengthRB] - _filterBucketsRB[0];
+  _pidCurrent[PIDD] = Pid[PIDD] * derivative;
 
   // Continue calculating P & D so we don't have to recalc for a bumpless transfer
   if (_manualOutputMode) 
@@ -500,11 +555,19 @@ inline void GrillPid::calcPidOutput(void)
     return;
   }
 
+#if defined(UPSCALAR)
+  float control = (_pidCurrent[PIDP] + _pidCurrent[PIDI] + _pidCurrent[PIDD]) * UPSCALAR;
+#else
+  float control = _pidCurrent[PIDP] + _pidCurrent[PIDI] + _pidCurrent[PIDD];
+#endif /*UPSCALAR*/
+
+  _pidOutput = constrain(control, 0, UPSCALE(100));
+
   // IIIII = fan speed percent per degree of accumulated error
   // anti-windup: Make sure we only adjust the I term while inside the proportional control range
-  if ((error > 0 && lastOutput < 100) || (error < 0 && lastOutput > 0))
+  if ((error > 0 && _pidOutput < UPSCALE(100)) || (error < 0 && _pidOutput > 0))
   {
-    _pidCurrent[PIDI] += Pid[PIDI] * error;
+    _pidCurrent[PIDI] += Pid[PIDI] * (error * _pidPeriodRB);
     // I term can never be negative, because if curr = set, then P and D are 0, so I must be output
     if (_pidCurrent[PIDI] < 0.0f) _pidCurrent[PIDI] = 0.0f;
   }
@@ -662,7 +725,6 @@ inline void GrillPid::commitServoOutput(void)
 #else
   //output = (unsigned int)map(output, 0, UPSCALE(_servoActiveCeil), _servoMinPos, _servoMaxPos);
   output = (unsigned int)MAP(output, 0, UPSCALE(_servoActiveCeil), _servoMinPos, _servoMaxPos);
-#endif /*UPSCALAR */
   unsigned int targetTicks = uSecToTicks(10U * output);
 #if defined(SERVO_MIN_THRESH)
   if (_servoHoldoff < 0xff)
@@ -746,7 +808,7 @@ void GrillPid::setLidOpenDuration(unsigned int value)
   _lidOpenDuration = (value > LIDOPEN_MIN_AUTORESUME) ? value : LIDOPEN_MIN_AUTORESUME;
 }
 
-void GrillPid::status(void) const
+void GrillPid::status(void)
 {
 #if defined(GRILLPID_SERIAL_ENABLED)
   SerialX.print(getSetPoint(), DEC);
@@ -757,7 +819,13 @@ void GrillPid::status(void) const
     if (Probes[i]->hasTemperature())
       SerialX.print(Probes[i]->Temperature, 1);
     else
-      Serial_char('U');
+      // Butterworth filter display unless probe in use
+      if (i == 3) {
+        SerialX.print(InputFilter.readOutput(),2);
+      } 
+      else {
+        Serial_char('U');
+      }
     Serial_csv();
   }
 
@@ -811,7 +879,7 @@ boolean GrillPid::doWork(void)
 #if defined GRILLPID_CUTBACK
       if (_pitStartRecover == PIDSTARTRECOVER_STARTUP)
       {
-        _pidCurrent[PIDI] *= 0.50f;
+        _pidCurrent[PIDI] *= 0.5f;
       }
 #endif
       _pitStartRecover = PIDSTARTRECOVER_NORMAL;
@@ -839,7 +907,7 @@ boolean GrillPid::doWork(void)
   return true;
 }
 
-void GrillPid::pidStatus(void) const
+void GrillPid::pidStatus(void)
 {
 #if defined(GRILLPID_SERIAL_ENABLED)
   TempProbe const* const pit = Probes[TEMP_CTRL];
@@ -851,8 +919,9 @@ void GrillPid::pidStatus(void) const
       SerialX.print(_pidCurrent[i], 2);
       Serial_csv();
     }
-
-    SerialX.print(pit->Temperature - pit->TemperatureAvg, 2);
+    
+    //Butterworth filter display
+    SerialX.print(_filterBucketsRB[_filterLengthRB] - _filterBucketsRB[0],2);
     Serial_nl();
   }
 #endif

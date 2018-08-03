@@ -4,6 +4,7 @@
 
 #include "Arduino.h"
 #include "grillpid_conf.h"
+#include "FixedFilter.h"
 
 // Probe types used in probeType config
 #define PROBETYPE_DISABLED 0  // do not read
@@ -145,6 +146,12 @@ void analogSetBandgapReference(unsigned char pin, bool enable);
 class GrillPid
 {
 private:
+  FixedFilter InputFilter;
+  unsigned char _pidMissRB;
+  unsigned char _pidPeriodRB;
+  unsigned char _pidPeriodCounterRB;
+  unsigned char _filterLengthRB;
+  float _filterBucketsRB[FILTER_SIZE];
 #ifndef UPSCALAR
   unsigned char _pidOutput;
 #else
@@ -217,6 +224,11 @@ public:
   void setProbeType(unsigned char idx, unsigned char probeType);
   void updateControlProbe(void);
 
+  // RB
+  void setPidPeriodRB(unsigned char value);
+  unsigned char getPidPeriodRB(void) const { return _pidPeriodRB; }
+  unsigned char getFilterLengthRB(void) const { return _filterLengthRB; }
+
   // Fan Speed
   // The maximum fan speed percent that will be used in automatic mode
   unsigned char getFanMaxSpeed(void) const { return _fanMaxSpeed; }
@@ -281,8 +293,8 @@ public:
   // Call this in loop()
   boolean doWork(void);
   void resetLidOpenResumeCountdown(void);
-  void status(void) const;
-  void pidStatus(void) const;
+  void status(void);
+  void pidStatus(void);
 };
 
 #endif /* __GRILLPID_H__ */

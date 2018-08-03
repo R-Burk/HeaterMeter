@@ -122,6 +122,16 @@ static const struct  __eeprom_probe DEFAULT_PROBE_CONFIG PROGMEM = {
   }
 };
 
+#define EEPROM_START_RB 512
+
+static const struct __eeprom_rb {
+  unsigned int magic;
+  unsigned char pidPeriodRB;
+} DEFAULT_CONFIG_RB PROGMEM = {
+  EEPROM_MAGIC,   // magic
+  5              // seconds
+};
+
 #ifdef PIEZO_HZ
 // A simple beep-beep-beep-(pause) alarm
 static const unsigned char tone_durs[] PROGMEM = { 10, 5, 10, 5, 10, 50 };  // in 10ms units
@@ -926,6 +936,44 @@ static void setTempParam(unsigned char idx, int val)
   }
 }
 
+static void reportParamsRB(void)
+{
+  SerialX.print("HMLG,RB ");
+  SerialX.print(pid.getPidPeriodRB(), DEC); 
+  //Serial_csv();
+  SerialX.print("=");
+  SerialX.print(pid.getFilterLengthRB(), DEC); 
+  Serial_nl();
+}
+
+static void storePidPeriodRB(unsigned char val)
+{
+  unsigned int ofs = EEPROM_START_RB + offsetof( __eeprom_rb, pidPeriodRB);
+  if (ofs != 0 && val != 0)
+  {
+    econfig_write_block(&val, (void *)ofs, sizeof(val));
+    SerialX.print("HMLG,PP=");
+    SerialX.print(val, DEC);
+    //Serial_csv();
+    SerialX.print("=");
+    SerialX.print(ofs, DEC);
+    Serial_nl();
+  }
+}
+
+static void storeParamsRB(unsigned char idx, int val)
+{
+  switch (idx)
+  {
+    case 0:
+      pid.setPidPeriodRB(val);
+      storePidPeriodRB(pid.getPidPeriodRB());
+      break;
+    default:
+      break;
+  }
+}
+
 static void handleCommandUrl(char *URL)
 {
   unsigned char urlLen = strlen(URL);
@@ -981,6 +1029,11 @@ static void handleCommandUrl(char *URL)
   else if (strncmp_P(URL, PSTR("set?tp="), 7) == 0)
   {
     csvParseI(URL + 7, setTempParam);
+  }
+  else if (strncmp_P(URL, PSTR("set?rb="), 7) == 0)
+  {
+    csvParseI(URL + 7, storeParamsRB);
+    reportParamsRB;
   }
   else if (strncmp_P(URL, PSTR("config"), 6) == 0)
   {
@@ -1173,10 +1226,27 @@ static void eepromLoadProbeConfig(unsigned char forceDefault)
   }  /* for i<TEMP_COUNT */
 }
 
+static void eepromLoadRBConfig(unsigned char forceDefault)
+{
+  // this union saves stack space by reusing the same memory area for both structs
+struct __eeprom_rb rb;
+
+  econfig_read_block(&rb, (void *)EEPROM_START_RB, sizeof(__eeprom_rb));
+  forceDefault = forceDefault || rb.magic != EEPROM_MAGIC;
+  if (forceDefault != 0)
+  {
+    memcpy_P(&rb, &DEFAULT_CONFIG_RB, sizeof(__eeprom_rb));
+    econfig_write_block(&rb, (void *)EEPROM_START_RB, sizeof(__eeprom_rb));
+  }
+  
+  pid.setPidPeriodRB(rb.pidPeriodRB);
+}
+
 void eepromLoadConfig(unsigned char forceDefault)
 {
   eepromLoadBaseConfig(forceDefault);
   eepromLoadProbeConfig(forceDefault);
+  eepromLoadRBConfig(forceDefault);
 }
 
 static void blinkLed(void)
@@ -1235,6 +1305,8 @@ static void newTempsAvail(void)
 
   //if (g_LogPidInternals) -RCB
     pid.pidStatus();
+
+  reportParamsRB();
 
   if ((pidCycleCount % 0x04) == 1)
     outputAdcStatus();
