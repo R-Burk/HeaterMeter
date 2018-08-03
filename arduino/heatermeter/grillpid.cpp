@@ -707,6 +707,10 @@ void GrillPid::resetLidOpenResumeCountdown(void)
 
 void GrillPid::setSetPoint(int value)
 {
+  // I don't want a recovery mode for small changes in setpoint - RCB
+  if ( abs(value - _setPoint) > 20) {
+      _pitStartRecover = PIDSTARTRECOVER_STARTUP;
+  }
   _setPoint = value;
   _pitStartRecover = PIDSTARTRECOVER_STARTUP;
   _manualOutputMode = false;
