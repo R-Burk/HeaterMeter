@@ -571,15 +571,6 @@ inline void GrillPid::calcPidOutput(void)
     // I term can never be negative, because if curr = set, then P and D are 0, so I must be output
     if (_pidCurrent[PIDI] < 0.0f) _pidCurrent[PIDI] = 0.0f;
   }
-  
-  // BBBBB = fan speed percent (always 0)
-  //_pidCurrent[PIDB] = Pid[PIDB];
-#if defined(UPSCALAR)  
-  int control = (_pidCurrent[PIDP] + _pidCurrent[PIDI] + _pidCurrent[PIDD]) * UPSCALAR;
-#else
-  int control = _pidCurrent[PIDP] + _pidCurrent[PIDI] + _pidCurrent[PIDD];
-#endif
-  _pidOutput = constrain(control, 0, UPSCALE(100));
 }
 
 void GrillPid::adjustFeedbackVoltage(void)
@@ -630,11 +621,8 @@ inline void GrillPid::commitFanOutput(void)
 
     // _fanActiveFloor should be constrained to 0-99 to prevent a divide by 0
     unsigned char range = 100 - _fanActiveFloor;
-#ifndef UPSCALAR
-    _fanSpeed = (unsigned int)(_pidOutput - _fanActiveFloor) * max / range;
-#else
+
     _fanSpeed = (unsigned long)(_pidOutput - UPSCALE(_fanActiveFloor)) * max / range;
-#endif /* UPSCALAR */
   }
 
   // 0 is always 0
@@ -652,21 +640,11 @@ inline void GrillPid::commitFanOutput(void)
     // Make sure we don't drive fan lower than user has indicated PWM can handle
 #if defined(FAN_30HZ) || defined(FAN_31KHZ)
       unsigned char minPWM = mappct(_fanMinSpeed, 1, 254);
-#ifndef UPSCALAR
-      _lastBlowerOutput = mappct(_fanSpeed, minPWM, 254);
-#else
-      //_lastBlowerOutput = (unsigned char)map(_fanSpeed, 0, UPSCALE(100), minPWM, 254);
       _lastBlowerOutput = (unsigned char)MAP(_fanSpeed, 0, UPSCALE(100), minPWM, 254);
-#endif /* UPSCALAR */
 #endif
 #if defined(FAN_20KHZ)
       unsigned char minPWM = mappct(_fanMinSpeed, 1, 100);
-#ifndef UPSCALAR
-      _lastBlowerOutput = mappct(_fanSpeed, minPWM, 100);
-#else
-      //_lastBlowerOutput = (unsigned char)map(_fanSpeed, 0,UPSCALE(100), minPWM, 100);
       _lastBlowerOutput = (unsigned char)MAP(_fanSpeed, 0,UPSCALE(100), minPWM, 100);
-#endif /* UPSCALAR */
 #endif
   }
   adjustFeedbackVoltage();
@@ -704,26 +682,13 @@ inline void GrillPid::commitServoOutput(void)
   unsigned char output;
 #else
   unsigned int  output;
+#endif /* UPSCALAR */
   output = constrain(_pidOutput, 0, UPSCALE(_servoActiveCeil));
-#endif /* UPSCALAR */
-
-#ifndef UPSCALAR
-  // Servo is open 0% at 0 PID output and 100% at _servoActiveCeil PID output
-  if (_pidOutput >= UPSCALE(_servoActiveCeil))
-    output = UPSCALE(100);
-  else {
-    output = (unsigned int)_pidOutput * 100U / _servoActiveCeil;
-  }
-#endif /* UPSCALAR */
 
   if (bit_is_set(_outputFlags, PIDFLAG_INVERT_SERVO))
     output = UPSCALE(100) - output;
 
   // Get the output speed in 10x usec by LERPing between min and max
-#ifndef UPSCALAR
-  output = mappct(output, _servoMinPos, _servoMaxPos);
-#else
-  //output = (unsigned int)map(output, 0, UPSCALE(_servoActiveCeil), _servoMinPos, _servoMaxPos);
   output = (unsigned int)MAP(output, 0, UPSCALE(_servoActiveCeil), _servoMinPos, _servoMaxPos);
   unsigned int targetTicks = uSecToTicks(10U * output);
 #if defined(SERVO_MIN_THRESH)
