@@ -712,7 +712,6 @@ void GrillPid::setSetPoint(int value)
       _pitStartRecover = PIDSTARTRECOVER_STARTUP;
   }
   _setPoint = value;
-  _pitStartRecover = PIDSTARTRECOVER_STARTUP;
   _manualOutputMode = false;
   LidOpenResumeCountdown = 0;
 }
