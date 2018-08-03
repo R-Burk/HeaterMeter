@@ -475,7 +475,6 @@ unsigned int GrillPid::countOfType(unsigned char probeType) const
 /* Calculate the desired output percentage using the proportional–integral-derivative (PID) controller algorithm */
 inline void GrillPid::calcPidOutput(void)
 {
-  _pidOutput = 0;
   unsigned char lastOutput = DNSCALE(_pidOutput);
 
   // If the pit probe is registering 0 degrees, don't jack the fan up to MAX
@@ -493,6 +492,16 @@ inline void GrillPid::calcPidOutput(void)
 
   // PPPPP = fan speed percent per degree of error
   _pidCurrent[PIDP] = Pid[PIDP] * error;
+
+
+  // Continue calculating P & D so we don't have to recalc for a bumpless transfer
+  if (_manualOutputMode) 
+    return;
+  // If we're in lid open mode or manual mode, fan should be off
+  if (isLidOpen() ) {
+    _pidOutput = 0;
+    return;
+  }
 
   // IIIII = fan speed percent per degree of accumulated error
   // anti-windup: Make sure we only adjust the I term while inside the proportional control range
@@ -712,6 +721,13 @@ void GrillPid::setSetPoint(int value)
       _pitStartRecover = PIDSTARTRECOVER_STARTUP;
   }
   _setPoint = value;
+  // Placeholder for implementing an advanced flag - RCB
+  // if (ADVFLAG_BUMPLESS) then
+  // this is a bumpless transfer from manual to pid - RCB
+  if ( _manualOutputMode ) {
+    calcPidOutput();
+    _pidCurrent[PIDI] = DNSCALE(_pidOutput) - _pidCurrent[PIDP] + _pidCurrent[PIDD];
+  }
   _manualOutputMode = false;
   LidOpenResumeCountdown = 0;
 }
