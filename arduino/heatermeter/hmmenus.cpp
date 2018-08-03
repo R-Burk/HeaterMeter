@@ -282,11 +282,11 @@ static state_t menuHome(button_t button)
   {
     char offset;
     if (button == BUTTON_UP)
-      offset = 5;
+      offset = 1;
     else if (button == BUTTON_DOWN)
-      offset = -5;
-    else if (button == BUTTON_LEFT)
       offset = -1;
+    else if (button == BUTTON_LEFT)
+      offset = -5;
     else
       return ST_AUTO;
 
