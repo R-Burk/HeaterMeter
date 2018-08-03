@@ -17,7 +17,7 @@ extern GrillPid pid;
 #define uSecToTicks(x) ((unsigned int)(clockCyclesPerMicrosecond() / 8) * x)
 
 // LERP percentage o into the unsigned range [A,B]. B - A must be < 655
-#define mappct(o, a, b)  (((b - a) * (unsigned int)o / 100) + a)
+#define mappct(o, a, b)  (((b - a) * (unsigned int)o / UPSCALE(100)) + a)
 
 #define DIFFMAX(x,y,d) ((x - y + d) <= (d*2U))
 
@@ -475,16 +475,17 @@ unsigned int GrillPid::countOfType(unsigned char probeType) const
 /* Calculate the desired output percentage using the proportional–integral-derivative (PID) controller algorithm */
 inline void GrillPid::calcPidOutput(void)
 {
-  unsigned char lastOutput = _pidOutput;
   _pidOutput = 0;
+  unsigned char lastOutput = DNSCALE(_pidOutput);
 
   // If the pit probe is registering 0 degrees, don't jack the fan up to MAX
   if (!Probes[TEMP_CTRL]->hasTemperature())
     return;
-
-  // If we're in lid open mode, fan should be off
-  if (isLidOpen())
     return;
+  }
+  _pidPeriodCounter = 0;
+  
+  float currentTemp, derivative;
 
   float currentTemp = Probes[TEMP_CTRL]->Temperature;
   float error;
@@ -506,9 +507,12 @@ inline void GrillPid::calcPidOutput(void)
   _pidCurrent[PIDD] = Pid[PIDD] * (Probes[TEMP_CTRL]->TemperatureAvg - currentTemp);
   // BBBBB = fan speed percent (always 0)
   //_pidCurrent[PIDB] = Pid[PIDB];
-
+#if defined(UPSCALAR)  
+  int control = (_pidCurrent[PIDP] + _pidCurrent[PIDI] + _pidCurrent[PIDD]) * UPSCALAR;
+#else
   int control = _pidCurrent[PIDP] + _pidCurrent[PIDI] + _pidCurrent[PIDD];
-  _pidOutput = constrain(control, 0, 100);
+#endif
+  _pidOutput = constrain(control, 0, UPSCALE(100));
 }
 
 void GrillPid::adjustFeedbackVoltage(void)
@@ -547,7 +551,7 @@ inline void GrillPid::commitFanOutput(void)
   const unsigned int LONG_PWM_PERIOD = 10000;
   const unsigned int PERIOD_SCALE = (LONG_PWM_PERIOD / TEMP_MEASURE_PERIOD);
 
-  if (_pidOutput < _fanActiveFloor)
+  if (_pidOutput < UPSCALE(_fanActiveFloor))
     _fanSpeed = 0;
   else
   {
@@ -559,30 +563,12 @@ inline void GrillPid::commitFanOutput(void)
 
     // _fanActiveFloor should be constrained to 0-99 to prevent a divide by 0
     unsigned char range = 100 - _fanActiveFloor;
+#ifndef UPSCALAR
     _fanSpeed = (unsigned int)(_pidOutput - _fanActiveFloor) * max / range;
+#else
+    _fanSpeed = (unsigned long)(_pidOutput - UPSCALE(_fanActiveFloor)) * max / range;
+#endif /* UPSCALAR */
   }
-
-  /* For anything above _minFanSpeed, do a nomal PWM write.
-     For below _minFanSpeed we use a "long pulse PWM", where
-     the pulse is 10 seconds in length.  For each percent we are
-     emulating, run the fan for one interval. */
-  if (_fanSpeed >= _fanMinSpeed)
-    _longPwmTmr = 0;
-  else
-  {
-    // Simple PWM, ON for first [FanSpeed] intervals then OFF
-    // for the remainder of the period
-    if (((PERIOD_SCALE * _fanSpeed / _fanMinSpeed) > _longPwmTmr))
-      _fanSpeed = _fanMinSpeed;
-    else
-      _fanSpeed = 0;
-
-    if (++_longPwmTmr > (PERIOD_SCALE - 1))
-      _longPwmTmr = 0;
-  }  /* long PWM */
-
-  if (bit_is_set(_outputFlags, PIDFLAG_INVERT_FAN))
-    _fanSpeed = _fanMaxSpeed - _fanSpeed;
 
   // 0 is always 0
   if (_fanSpeed == 0)
@@ -599,11 +585,21 @@ inline void GrillPid::commitFanOutput(void)
     // Make sure we don't drive fan lower than user has indicated PWM can handle
 #if defined(FAN_30HZ) || defined(FAN_31KHZ)
       unsigned char minPWM = mappct(_fanMinSpeed, 1, 254);
+#ifndef UPSCALAR
       _lastBlowerOutput = mappct(_fanSpeed, minPWM, 254);
+#else
+      //_lastBlowerOutput = (unsigned char)map(_fanSpeed, 0, UPSCALE(100), minPWM, 254);
+      _lastBlowerOutput = (unsigned char)MAP(_fanSpeed, 0, UPSCALE(100), minPWM, 254);
+#endif /* UPSCALAR */
 #endif
 #if defined(FAN_20KHZ)
       unsigned char minPWM = mappct(_fanMinSpeed, 1, 100);
+#ifndef UPSCALAR
       _lastBlowerOutput = mappct(_fanSpeed, minPWM, 100);
+#else
+      //_lastBlowerOutput = (unsigned char)map(_fanSpeed, 0,UPSCALE(100), minPWM, 100);
+      _lastBlowerOutput = (unsigned char)MAP(_fanSpeed, 0,UPSCALE(100), minPWM, 100);
+#endif /* UPSCALAR */
 #endif
   }
   adjustFeedbackVoltage();
@@ -637,18 +633,32 @@ unsigned int GrillPid::getServoStepNext(unsigned int curr)
 inline void GrillPid::commitServoOutput(void)
 {
 #if defined(GRILLPID_SERVO_ENABLED)
+#ifndef UPSCALAR
   unsigned char output;
+#else
+  unsigned int  output;
+  output = constrain(_pidOutput, 0, UPSCALE(_servoActiveCeil));
+#endif /* UPSCALAR */
+
+#ifndef UPSCALAR
   // Servo is open 0% at 0 PID output and 100% at _servoActiveCeil PID output
-  if (_pidOutput >= _servoActiveCeil)
-    output = 100;
-  else
+  if (_pidOutput >= UPSCALE(_servoActiveCeil))
+    output = UPSCALE(100);
+  else {
     output = (unsigned int)_pidOutput * 100U / _servoActiveCeil;
+  }
+#endif /* UPSCALAR */
 
   if (bit_is_set(_outputFlags, PIDFLAG_INVERT_SERVO))
-    output = 100 - output;
+    output = UPSCALE(100) - output;
 
   // Get the output speed in 10x usec by LERPing between min and max
+#ifndef UPSCALAR
   output = mappct(output, _servoMinPos, _servoMaxPos);
+#else
+  //output = (unsigned int)map(output, 0, UPSCALE(_servoActiveCeil), _servoMinPos, _servoMaxPos);
+  output = (unsigned int)MAP(output, 0, UPSCALE(_servoActiveCeil), _servoMinPos, _servoMaxPos);
+#endif /*UPSCALAR */
   unsigned int targetTicks = uSecToTicks(10U * output);
 #if defined(SERVO_MIN_THRESH)
   if (_servoHoldoff < 0xff)
@@ -674,7 +684,7 @@ inline void GrillPid::commitServoOutput(void)
 
 inline void GrillPid::commitPidOutput(void)
 {
-  calcExpMovingAverage(PIDOUTPUT_AVG_SMOOTH, &PidOutputAvg, _pidOutput);
+  calcExpMovingAverage(PIDOUTPUT_AVG_SMOOTH, &PidOutputAvg, DNSCALE(_pidOutput));
   commitFanOutput();
   commitServoOutput();
 }
@@ -706,7 +716,7 @@ void GrillPid::setSetPoint(int value)
 void GrillPid::setPidOutput(int value)
 {
   _manualOutputMode = true;
-  _pidOutput = constrain(value, 0, 100);
+  _pidOutput = constrain(value, 0, UPSCALE(100));
   LidOpenResumeCountdown = 0;
 }
 
@@ -722,7 +732,7 @@ void GrillPid::setLidOpenDuration(unsigned int value)
   _lidOpenDuration = (value > LIDOPEN_MIN_AUTORESUME) ? value : LIDOPEN_MIN_AUTORESUME;
 }
 
-void GrillPid::status(void) const
+void GrillPid::status(void)
 {
 #if defined(GRILLPID_SERIAL_ENABLED)
   SerialX.print(getSetPoint(), DEC);
@@ -737,7 +747,7 @@ void GrillPid::status(void) const
     Serial_csv();
   }
 
-  SerialX.print(getPidOutput(), DEC);
+  SerialX.print(DNSCALE(getPidOutput()), DEC);
   Serial_csv();
   SerialX.print((int)PidOutputAvg, DEC);
   Serial_csv();
@@ -771,28 +781,25 @@ boolean GrillPid::doWork(void)
     Probes[i]->processPeriod();
   }
 
+  // Always calculate the output
+  // calcPidOutput() will bail if it isn't supposed to be in control
+  calcPidOutput();
+  
   if (!_manualOutputMode)
   {
-    // Always calculate the output
-    // calcPidOutput() will bail if it isn't supposed to be in control
-    calcPidOutput();
-    
-<<<<<<< HEAD
     int tempDiff = _setPoint - (int)Probes[TEMP_CTRL]->Temperature;
     if ((tempDiff <= 0) &&
-=======
-    int pitTemp = (int)Probes[TEMP_CTRL]->Temperature;
-    if ((pitTemp >= _setPoint) &&
->>>>>>> parent of 7e9ee91... Dynamic Integrator Cutback
       (_lidOpenDuration - LidOpenResumeCountdown > LIDOPEN_MIN_AUTORESUME))
     {
       // When we first achieve temperature, reduce any I sum we accumulated during startup
       // If we actually neded that sum to achieve temperature we'll rebuild it, and it
       // prevents bouncing around above the temperature when you first start up
+#if defined GRILLPID_CUTBACK
       if (_pitStartRecover == PIDSTARTRECOVER_STARTUP)
       {
         _pidCurrent[PIDI] *= 0.50f;
       }
+#endif
       _pitStartRecover = PIDSTARTRECOVER_NORMAL;
       LidOpenResumeCountdown = 0;
     }
@@ -805,7 +812,7 @@ boolean GrillPid::doWork(void)
     // and if the fan has been running less than 90% (more than 90% would indicate probable out of fuel)
     // Note that the code assumes we're not currently counting down
     else if (isPitTempReached() && 
-      ((tempDiff*100/_setPoint) >= (int)LidOpenOffset) &&
+      (((tempDiff*100)/_setPoint) >= (int)LidOpenOffset) &&
       ((int)PidOutputAvg < 90))
     {
       resetLidOpenResumeCountdown();
@@ -818,7 +825,7 @@ boolean GrillPid::doWork(void)
   return true;
 }
 
-void GrillPid::pidStatus(void) const
+void GrillPid::pidStatus(void)
 {
 #if defined(GRILLPID_SERIAL_ENABLED)
   TempProbe const* const pit = Probes[TEMP_CTRL];

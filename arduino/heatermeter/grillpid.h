@@ -145,7 +145,13 @@ void analogSetBandgapReference(unsigned char pin, bool enable);
 class GrillPid
 {
 private:
+  unsigned char _pidMiss;
+  
+#ifndef UPSCALAR
   unsigned char _pidOutput;
+#else
+  unsigned int  _pidOutput;
+#endif /* UPSCALAR */
   unsigned long _lastWorkMillis;
   unsigned char _pitStartRecover;
   int _setPoint;
@@ -167,7 +173,11 @@ private:
   unsigned char _outputFlags;
 
   // Current fan speed (percent)
+#ifndef UPSCALAR
   unsigned char _fanSpeed;
+#else
+  unsigned int  _fanSpeed;
+#endif /* UPSCALAR */
   // Feedback switching mode voltage controller
   unsigned char _feedvoltLastOutput;
   // Desired fan target (0-255)
@@ -243,10 +253,14 @@ public:
   
   /* Runtime Data */
   // Current PID output in percent, setting this will turn on manual output mode
+#ifndef UPSCALAR
   unsigned char getPidOutput() const { return _pidOutput; }
+#else
+  unsigned int getPidOutput() const { return _pidOutput; }
+#endif /* UPSCALAR */
   void setPidOutput(int value);
   // Current fan speed output in percent
-  unsigned char getFanSpeed(void) const { return _fanSpeed; };
+  unsigned char getFanSpeed(void) const { return DNSCALE(_fanSpeed); };
   unsigned long getLastWorkMillis(void) const { return _lastWorkMillis; }
 
   boolean getManualOutputMode(void) const { return _manualOutputMode; }
@@ -261,7 +275,7 @@ public:
   // true if PidOutput > 0
   boolean isOutputActive(void) const { return _pidOutput != 0; }
   // true if fan is running at maximum speed or servo wide open
-  boolean isOutputMaxed(void) const { return _pidOutput >= 100; }
+  boolean isOutputMaxed(void) const { return DNSCALE(_pidOutput) >= 100; }
   // true if temperature was >= setpoint since last set / lid event
   boolean isPitTempReached(void) const { return _pitStartRecover == PIDSTARTRECOVER_NORMAL; }
   unsigned char getPitStartRecover(void) const { return _pitStartRecover; }
@@ -269,8 +283,8 @@ public:
   // Call this in loop()
   boolean doWork(void);
   void resetLidOpenResumeCountdown(void);
-  void status(void) const;
-  void pidStatus(void) const;
+  void status(void);
+  void pidStatus(void);
 };
 
 #endif /* __GRILLPID_H__ */

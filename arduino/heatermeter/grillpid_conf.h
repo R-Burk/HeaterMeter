@@ -1,4 +1,6 @@
 // HeaterMeter Copyright 2013 Bryan Mayland <bmayland@capnbry.net>
+#ifndef __GRILLPID_CONF__
+#define __GRILLPID_CONF__
 
 #define GRILLPID_CALC_TEMP
 #define GRILLPID_SERIAL_ENABLED
@@ -8,6 +10,16 @@
 #define FAN_30HZ
 //#define FAN_20KHZ
 //#define FAN_31KHZ
+
+#define UPSCALAR    10
+#if defined(UPSCALAR)
+#define UPSCALE(P)  (P * UPSCALAR)
+#define DNSCALE(P)  ((unsigned char)(P / UPSCALAR))
+#define MAP(x, in_min, in_max, out_min, out_max)   (((unsigned long)x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min)
+#else
+#define UPSCALE(P)  (P)
+#define DNSCALE(P)  (P)
+#endif
 
 #define TEMP_PIT    0
 #define TEMP_FOOD1  1
@@ -27,7 +39,7 @@
 #define TEMP_MEASURE_PERIOD 1000
 // Number of times the ouput is adusted over TEMP_MEASURE_PERIOD
 // This affects fan boost mode and FFEEDBACK output
-#define TEMP_OUTADJUST_CNT 3
+#define TEMP_OUTADJUST_CNT 4
 // 2/(1+Number of samples used in the exponential moving average)
 #define TEMPPROBE_AVG_SMOOTH (2.0f/(1.0f+60.0f))
 #define PIDOUTPUT_AVG_SMOOTH (2.0f/(1.0f+240.0f))
@@ -39,7 +51,7 @@
 #define SERVO_REFRESH          20000
 // Miniumum number of uS of difference in servo position to force immediate move
 // undefine to force continuous servo operation
-#define SERVO_MIN_THRESH       50
+// #define SERVO_MIN_THRESH       50
 // Max number of seconds to hold off a servo write due to being below threshold
 #define SERVO_MAX_HOLDOFF      10
 
@@ -48,3 +60,5 @@
 #if HM_BOARD_REV == 'A'
   #undef GRILLPID_SERVO_ENABLED
 #endif
+
+#endif /* __GRILLPID_CONF__ */
