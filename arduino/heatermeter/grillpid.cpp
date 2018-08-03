@@ -480,11 +480,6 @@ inline void GrillPid::calcPidOutput(void)
   // If the pit probe is registering 0 degrees, don't jack the fan up to MAX
   if (!Probes[TEMP_CTRL]->hasTemperature())
     return;
-    return;
-  }
-  _pidPeriodCounter = 0;
-  
-  float currentTemp, derivative;
 
   float currentTemp = Probes[TEMP_CTRL]->Temperature;
   float error;
@@ -493,6 +488,8 @@ inline void GrillPid::calcPidOutput(void)
   // PPPPP = fan speed percent per degree of error
   _pidCurrent[PIDP] = Pid[PIDP] * error;
 
+  // DDDDD = fan speed percent per degree of change over TEMPPROBE_AVG_SMOOTH period
+  _pidCurrent[PIDD] = Pid[PIDD] * (Probes[TEMP_CTRL]->TemperatureAvg - currentTemp);
 
   // Continue calculating P & D so we don't have to recalc for a bumpless transfer
   if (_manualOutputMode) 
@@ -511,9 +508,7 @@ inline void GrillPid::calcPidOutput(void)
     // I term can never be negative, because if curr = set, then P and D are 0, so I must be output
     if (_pidCurrent[PIDI] < 0.0f) _pidCurrent[PIDI] = 0.0f;
   }
-
-  // DDDDD = fan speed percent per degree of change over TEMPPROBE_AVG_SMOOTH period
-  _pidCurrent[PIDD] = Pid[PIDD] * (Probes[TEMP_CTRL]->TemperatureAvg - currentTemp);
+  
   // BBBBB = fan speed percent (always 0)
   //_pidCurrent[PIDB] = Pid[PIDB];
 #if defined(UPSCALAR)  
@@ -751,7 +746,7 @@ void GrillPid::setLidOpenDuration(unsigned int value)
   _lidOpenDuration = (value > LIDOPEN_MIN_AUTORESUME) ? value : LIDOPEN_MIN_AUTORESUME;
 }
 
-void GrillPid::status(void)
+void GrillPid::status(void) const
 {
 #if defined(GRILLPID_SERIAL_ENABLED)
   SerialX.print(getSetPoint(), DEC);
@@ -844,7 +839,7 @@ boolean GrillPid::doWork(void)
   return true;
 }
 
-void GrillPid::pidStatus(void)
+void GrillPid::pidStatus(void) const
 {
 #if defined(GRILLPID_SERIAL_ENABLED)
   TempProbe const* const pit = Probes[TEMP_CTRL];

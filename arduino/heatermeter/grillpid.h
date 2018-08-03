@@ -145,8 +145,6 @@ void analogSetBandgapReference(unsigned char pin, bool enable);
 class GrillPid
 {
 private:
-  unsigned char _pidMiss;
-  
 #ifndef UPSCALAR
   unsigned char _pidOutput;
 #else
@@ -283,8 +281,8 @@ public:
   // Call this in loop()
   boolean doWork(void);
   void resetLidOpenResumeCountdown(void);
-  void status(void);
-  void pidStatus(void);
+  void status(void) const;
+  void pidStatus(void) const;
 };
 
 #endif /* __GRILLPID_H__ */

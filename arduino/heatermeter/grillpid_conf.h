@@ -2,6 +2,7 @@
 #ifndef __GRILLPID_CONF__
 #define __GRILLPID_CONF__
 
+
 #define GRILLPID_CALC_TEMP
 #define GRILLPID_SERIAL_ENABLED
 #define GRILLPID_SERVO_ENABLED
@@ -10,8 +11,9 @@
 #define FAN_30HZ
 //#define FAN_20KHZ
 //#define FAN_31KHZ
-
+//#define GRILLPID_CUTBACK
 #define UPSCALAR    10
+
 #if defined(UPSCALAR)
 #define UPSCALE(P)  (P * UPSCALAR)
 #define DNSCALE(P)  ((unsigned char)(P / UPSCALAR))
