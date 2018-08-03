@@ -777,8 +777,13 @@ boolean GrillPid::doWork(void)
     // calcPidOutput() will bail if it isn't supposed to be in control
     calcPidOutput();
     
+<<<<<<< HEAD
     int tempDiff = _setPoint - (int)Probes[TEMP_CTRL]->Temperature;
     if ((tempDiff <= 0) &&
+=======
+    int pitTemp = (int)Probes[TEMP_CTRL]->Temperature;
+    if ((pitTemp >= _setPoint) &&
+>>>>>>> parent of 7e9ee91... Dynamic Integrator Cutback
       (_lidOpenDuration - LidOpenResumeCountdown > LIDOPEN_MIN_AUTORESUME))
     {
       // When we first achieve temperature, reduce any I sum we accumulated during startup
@@ -786,7 +791,7 @@ boolean GrillPid::doWork(void)
       // prevents bouncing around above the temperature when you first start up
       if (_pitStartRecover == PIDSTARTRECOVER_STARTUP)
       {
-        _pidCurrent[PIDI] *= 5.0f / (5.0f + pow(trueDeriv/2.0f,2));
+        _pidCurrent[PIDI] *= 0.50f;
       }
       _pitStartRecover = PIDSTARTRECOVER_NORMAL;
       LidOpenResumeCountdown = 0;
