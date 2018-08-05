@@ -1,4 +1,3 @@
-﻿// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
 // GrillPid uses TIMER1 COMPB vector, as well as modifies the waveform
 // generation mode of TIMER1. Blower output pin needs to be a hardware PWM pin.
 // Fan output is 489Hz phase-correct PWM
@@ -257,7 +256,7 @@ void TempProbe::setProbeType(unsigned char probeType)
 {
   _probeType = probeType;
   _tempStatus = TSTATUS_NONE;
-  _hasTempAvg = false;
+  _hasTempFilt = false;
 }
 
 void TempProbe::calcTemp(unsigned int adcval)
@@ -327,14 +326,14 @@ void TempProbe::processPeriod(void)
   // Called once per measurement period after temperature has been calculated
   if (hasTemperature())
   {
-    if (!_hasTempAvg)
+    if (!_hasTempFilt)
     {
-      TemperatureAvg = Temperature;
-      _hasTempAvg = true;
+      TemperatureFilt = Temperature;
+      _hasTempFilt = true;
     }
     else
-      calcExpMovingAverage(TEMPPROBE_AVG_SMOOTH, &TemperatureAvg, Temperature);
-    Alarms.updateStatus(Temperature);
+      calcExpMovingAverage(TEMPPROBE_LPF_ALPHA, &TemperatureFilt, Temperature);
+    Alarms.updateStatus(TemperatureFilt);
   }
   else
     Alarms.silenceAll();
@@ -384,10 +383,6 @@ void GrillPid::init(void)
   ADCSRA = bit(ADEN) | bit(ADATE) | bit(ADIE) | bit(ADPS2) | bit(ADPS1) | bit (ADPS0) | bit(ADSC);
 
   updateControlProbe();
-
-  //Butterworth
-  //Setting miss high so filters will be initted first time a pit temp shows up
-  _pidMissRB = 255;
 }
 
 void __attribute__ ((noinline)) GrillPid::updateControlProbe(void)
@@ -478,17 +473,10 @@ unsigned int GrillPid::countOfType(unsigned char probeType) const
 
 void GrillPid::setPidPeriodRB(unsigned char value)
 {
-  if (value < MIN_FILTER_TIME || value > MAX_FILTER_TIME)
-    value = 5;
-
-  unsigned char buckets, remainder;
-  buckets = FILTER_TIME / value;
-  remainder = FILTER_TIME % value;
-  if ( remainder > 5 )
-    buckets++;
-  _filterLengthRB = buckets;
-
-  _pidPeriodRB = value;
+  if ( value > 0 )
+    _pidPeriodRB = value;
+  else
+    _pidPeriodRB = 10;
 }
 
 /* Calculate the desired output percentage using the proportional–integral-derivative (PID) controller algorithm */
@@ -497,10 +485,13 @@ inline void GrillPid::calcPidOutput(void)
   unsigned char lastOutput = DNSCALE(_pidOutput);
 
   // If the pit probe is registering 0 degrees, don't jack the fan up to MAX
-  if (!Probes[TEMP_CTRL]->hasTemperature()) {
-    _pidMissRB = (_pidMissRB < 255) ? (_pidMissRB++) : ( 255 );
+  if (!Probes[TEMP_CTRL]->hasTemperatureFilt()) {
     return;
   }
+
+  //Need to get the temp field loaded up
+  if (_pidCurrent[PIDT] == 0)
+    _pidCurrent[PIDT] = Probes[TEMP_CTRL]->TemperatureFilt;
   
   //Lets see if temp measurements and pid cals are less spastic when spaced a bit
   if (_pidPeriodCounterRB < _pidPeriodRB) {
@@ -509,42 +500,16 @@ inline void GrillPid::calcPidOutput(void)
   }
   _pidPeriodCounterRB = 0;
   
-  float currentTemp, derivative, error;
-  //InputFilter is a 2nd order butterworth filter
-  currentTemp = Probes[TEMP_CTRL]->Temperature;
-  // See if we missed temp readings too many times and should reinitialize
-  if (_pidMissRB < 60 ) 
-  {
-    currentTemp = InputFilter.add(currentTemp);
-    //shuffle filter buckets
-    for (unsigned char i=FILTER_SIZE-1; i>0; i--)
-    {
-      _filterBucketsRB[i] = _filterBucketsRB[i-1];
-    }
-  } 
-  else 
-  {
-    currentTemp = InputFilter.init(currentTemp);
-    //initial fill filter buckets
-    for (unsigned char i=FILTER_SIZE-1; i>0; i--)
-    {
-      _filterBucketsRB[i] = currentTemp;
-    }
-  }
-  _pidMissRB = 0;
-
-
-  _filterBucketsRB[0] = currentTemp;
- 
-  error = _setPoint - currentTemp;
+  float currentTemp = Probes[TEMP_CTRL]->TemperatureFilt;
+  float error = _setPoint - currentTemp;
 
   // PPPPP = fan speed percent per degree of error
   _pidCurrent[PIDP] = Pid[PIDP] * error;
 
-  // DDDDD = fan speed percent per degree of change over _pidPeriodRB * 2
-  // Derivative is calced against two time periods of the InputFilter ( 2 x PID_PERIOD seconds)
-  derivative = _filterBucketsRB[_filterLengthRB] - _filterBucketsRB[0];
+  // DDDDD = fan speed percent per degree of change over _pidPeriodRB
+  float derivative = _pidCurrent[PIDT] - currentTemp;
   _pidCurrent[PIDD] = Pid[PIDD] * derivative;
+  _pidCurrent[PIDT] = currentTemp;
 
   // Continue calculating P & D so we don't have to recalc for a bumpless transfer
   if (_manualOutputMode) 
@@ -785,13 +750,7 @@ void GrillPid::status(void)
       // Change for 2 digits after decimal. Hopefully will help relay and peaks - RCB
       SerialX.print(Probes[i]->Temperature, 2);  
     else
-      // Butterworth filter display unless probe in use
-      if (i == 3) {
-        SerialX.print(InputFilter.readOutput(),2);
-      } 
-      else {
-        Serial_char('U');
-      }
+      Serial_char('U');
     Serial_csv();
   }
 
@@ -880,14 +839,13 @@ void GrillPid::pidStatus(void)
   if (pit->hasTemperature())
   {
     print_P(PSTR("HMPS"CSV_DELIMITER));
-    for (unsigned char i=PIDB; i<=PIDD; ++i)
+    for (unsigned char i=PIDT; i<=PIDD; ++i)
     {
       SerialX.print(_pidCurrent[i], 2);
       Serial_csv();
     }
     
-    //Butterworth filter display
-    SerialX.print(_filterBucketsRB[_filterLengthRB] - _filterBucketsRB[0],2);
+    SerialX.print(_pidCurrent[PIDT] / Pid[PIDD],2);
     Serial_nl();
   }
 #endif

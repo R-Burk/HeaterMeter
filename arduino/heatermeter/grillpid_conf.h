@@ -12,12 +12,6 @@
 //#define FAN_31KHZ
 //#define GRILLPID_CUTBACK
 
-#define FILTER_SIZE     11
-#define FILTER_TIME     20
-#define MAX_FILTER_TIME 10
-#define MIN_FILTER_TIME 2
-
-
 #define UPSCALAR    10
 #if defined(UPSCALAR)
 #define UPSCALE(P)  (P * UPSCALAR)
@@ -48,7 +42,12 @@
 // This affects fan boost mode and FFEEDBACK output
 #define TEMP_OUTADJUST_CNT 4
 // 2/(1+Number of samples used in the exponential moving average)
-#define TEMPPROBE_AVG_SMOOTH (2.0f/(1.0f+60.0f))
+// #define TEMPPROBE_AVG_SMOOTH (2.0f/(1.0f+60.0f))
+// Using ewma for filtering the calculation for alpha is different
+// alpha = cos(2*PI*fc / fs) - + sqrt(cos(2*pi*fc/fs)^2 - 4*cos(2*PI*fc/fs)+3)
+// we are doing 1 sample/second so fs = 1
+// alspha for a 30 second/cycle or .0333 HZ
+#define TEMPPROBE_LPF_ALPHA 0.188344f
 #define PIDOUTPUT_AVG_SMOOTH (2.0f/(1.0f+240.0f))
 // Once entering LID OPEN mode, the minimum number of seconds to stay in
 // LID OPEN mode before autoresuming due to temperature returning to setpoint

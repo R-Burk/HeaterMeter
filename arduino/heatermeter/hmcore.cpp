@@ -129,7 +129,7 @@ static const struct __eeprom_rb {
   unsigned char pidPeriodRB;
 } DEFAULT_CONFIG_RB PROGMEM = {
   EEPROM_MAGIC,   // magic
-  5              // seconds
+  10              // seconds
 };
 
 #ifdef PIEZO_HZ
@@ -940,9 +940,7 @@ static void reportParamsRB(void)
 {
   SerialX.print("HMLG,RB ");
   SerialX.print(pid.getPidPeriodRB(), DEC); 
-  //Serial_csv();
-  SerialX.print("=");
-  SerialX.print(pid.getFilterLengthRB(), DEC); 
+  //Serial_csv(); 
   Serial_nl();
 }
 

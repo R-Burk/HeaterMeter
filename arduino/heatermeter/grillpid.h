@@ -4,7 +4,6 @@
 
 #include "Arduino.h"
 #include "grillpid_conf.h"
-#include "FixedFilter.h"
 
 // Probe types used in probeType config
 #define PROBETYPE_DISABLED 0  // do not read
@@ -68,7 +67,7 @@ private:
   const unsigned char _pin; 
   unsigned char _probeType;
   char _tempStatus;
-  boolean _hasTempAvg;
+  boolean _hasTempFilt;
   
 public:
   TempProbe(const unsigned char pin);
@@ -93,8 +92,8 @@ public:
   char getTempStatus(void) const { return _tempStatus; }
   void setTemperatureC(float T);
   // Temperature moving average 
-  float TemperatureAvg;
-  boolean hasTemperatureAvg(void) const { return _hasTempAvg; }
+  float TemperatureFilt;
+  boolean hasTemperatureFilt(void) const { return _hasTempFilt; }
   // Convert ADC to Temperature
   void calcTemp(unsigned int _accumulator);
   // Perform once-per-period processing
@@ -104,7 +103,7 @@ public:
 };
 
 // Indexes into the pid array
-#define PIDB 0
+#define PIDT 0
 #define PIDP 1
 #define PIDI 2
 #define PIDD 3
@@ -146,12 +145,8 @@ void analogSetBandgapReference(unsigned char pin, bool enable);
 class GrillPid
 {
 private:
-  FixedFilter InputFilter;
-  unsigned char _pidMissRB;
   unsigned char _pidPeriodRB;
   unsigned char _pidPeriodCounterRB;
-  unsigned char _filterLengthRB;
-  float _filterBucketsRB[FILTER_SIZE];
 #ifndef UPSCALAR
   unsigned char _pidOutput;
 #else
@@ -227,7 +222,6 @@ public:
   // RB
   void setPidPeriodRB(unsigned char value);
   unsigned char getPidPeriodRB(void) const { return _pidPeriodRB; }
-  unsigned char getFilterLengthRB(void) const { return _filterLengthRB; }
 
   // Fan Speed
   // The maximum fan speed percent that will be used in automatic mode
