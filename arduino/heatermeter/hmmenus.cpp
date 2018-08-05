@@ -568,9 +568,9 @@ static state_t menuProbeDiag(button_t button)
     const char *ptype = (char *)pgm_read_word(&LCD_PROBETYPES[probe->getProbeType()]);
     lcdprint_P(ptype, false);
     lcd.write(' ');
-    if (probe->hasTemperature())
+    if (probe->hasTemperatureFilt())
     {
-      fp.print(lcd, probe->Temperature, 6, 2);
+      fp.print(lcd, probe->TemperatureFilt, 6, 2);
       lcd.write(DEGREE);
     }
     else

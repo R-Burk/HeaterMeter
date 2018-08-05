@@ -281,7 +281,7 @@ public:
   // Current fan speed output in percent
   unsigned char getFanSpeed(void) const { return DNSCALE(_fanSpeed); };
   unsigned long getLastWorkMillis(void) const { return _lastWorkMillis; }
-  unsigned char getPidIMax(void) const { return isPitTempReached() ? 100 : _fanMaxStartupSpeed; }
+  unsigned char getPidMax(void) const { return isPitTempReached() ? 100 : _fanMaxStartupSpeed; }
 
   // PID output moving average
   float PidOutputAvg;

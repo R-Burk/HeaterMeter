@@ -468,7 +468,7 @@ void updateDisplay(void)
       TempProbe *probe = pid.Probes[g_HomeDisplayMode];
       if (probe->hasTemperature())
       {
-        lcdPrintBigNum(probe->Temperature);
+        lcdPrintBigNum(probe->TemperatureFilt);
         return;
       }
     }
@@ -476,7 +476,7 @@ void updateDisplay(void)
     /* Default Pit / Fan Speed first line */
     int pitTemp;
     if (pid.Probes[TEMP_CTRL]->hasTemperature())
-      pitTemp = pid.Probes[TEMP_CTRL]->Temperature;
+      pitTemp = pid.Probes[TEMP_CTRL]->TemperatureFilt;
     else
       pitTemp = 0;
     if (!pid.isManualOutputMode() && !pid.Probes[TEMP_CTRL]->hasTemperature())
@@ -523,7 +523,7 @@ void updateDisplay(void)
     {
       loadProbeName(probeIndex);
       snprintf_P(buffer, sizeof(buffer), PSTR("%-12s%3d" DEGREE), editString,
-        (int)pid.Probes[probeIndex]->Temperature);
+        (int)pid.Probes[probeIndex]->TemperatureFilt);
     }
     else
     {

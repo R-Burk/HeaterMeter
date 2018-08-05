@@ -407,8 +407,8 @@ void TempProbe::setTemperatureC(float T)
 
 void TempProbe::status(void) const
 {
-  if (hasTemperature())
-    SerialX.print(Temperature, 1);
+  if (hasTemperatureFilt())
+    SerialX.print(TemperatureFilt, 1);
   else
     Serial_char('U');
   Serial_csv();
