@@ -1,4 +1,4 @@
-// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+// HeaterMeter Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 #ifndef __MENUS_H__
 #define __MENUS_H__
 
@@ -11,6 +11,9 @@
 #define BUTTON_LEAVE (1<<6)
 // The timeout specified in the menu definition has expired
 #define BUTTON_TIMEOUT (1<<5)
+// Button is a long press
+#define BUTTON_LONG (1<<4)
+
 
 #define ST_NONE     0
 #define ST_AUTO     1
@@ -27,6 +30,7 @@ typedef struct tagMenuDefinition
   state_t state;
   handler_t handler;
   unsigned char timeout;
+  button_t longpress; // bitwise OR of buttons with longpresshandlers in the menu
 } menu_definition_t;
 
 typedef struct tagMenuTransition
@@ -51,6 +55,12 @@ public:
   button_t getButton(void) const { return m_lastButton; }
   unsigned char getButtonRepeatCnt(void) const { return m_buttonRepeatCnt; }
 private:
+  enum ButtonLongpressState {
+    mbsNone,
+    mbsLongCheck,
+    mbsWaitForKeyup
+  };
+
   const menu_definition_t *m_definitions;
   const menu_transition_t *m_transitions;
   const menu_definition_t *m_currMenu;
@@ -58,11 +68,14 @@ private:
   state_t m_state;
   state_t m_lastState;
   button_t m_lastButton;
+  ButtonLongpressState m_buttonState;
   unsigned char m_buttonRepeatCnt;
-  unsigned long m_lastActivity;
+  unsigned long m_lastStateChange;
+  unsigned long m_lastButtonActivity;
 
   unsigned long getTimeoutDuration(void) const;
   unsigned long getElapsedDuration(void) const;
+  boolean getHasLongpress(button_t button) const;
   handler_t getHandler(void) const;
   state_t findTransition(button_t button) const;
 };

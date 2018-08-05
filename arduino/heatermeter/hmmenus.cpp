@@ -1,7 +1,8 @@
-// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+// HeaterMeter Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 #include "hmcore.h"
 #include "grillpid.h"
 #include "strings.h"
+#include "floatprint.h"
 
 static state_t menuHome(button_t button);
 static state_t menuSetpoint(button_t button);
@@ -15,15 +16,16 @@ static state_t menuMaxFanSpeed(button_t button);
 static state_t menuAlarmTriggered(button_t button);
 static state_t menuLcdBacklight(button_t button);
 static state_t menuToast(button_t button);
+static state_t menuProbeDiag(button_t button);
 
 static const menu_definition_t MENU_DEFINITIONS[] PROGMEM = {
-  { ST_HOME_FOOD1, menuHome, 5 },
-  { ST_HOME_FOOD2, menuHome, 5 },
-  { ST_HOME_AMB, menuHome, 5 },
-  { ST_HOME_NOPROBES, menuHome, 1 },
+  { ST_HOME_FOOD1, menuHome, 5, BUTTON_LEFT },
+  { ST_HOME_FOOD2, menuHome, 5, BUTTON_LEFT },
+  { ST_HOME_AMB, menuHome, 5, BUTTON_LEFT },
+  { ST_HOME_NOPROBES, menuHome, 1, BUTTON_LEFT }, // Both No Pit Probe AND Pit with no food probes
   { ST_HOME_ALARM, menuAlarmTriggered, 0 },
   { ST_SETPOINT, menuSetpoint, 10 },
-  { ST_MANUALMODE, menuManualMode, 10 },
+  { ST_MANUALMODE, menuManualMode, 10, BUTTON_LEFT },
   { ST_PROBEOFF0, menuProbeOffset, 10 },
   { ST_PROBEOFF1, menuProbeOffset, 10 },
   { ST_PROBEOFF2, menuProbeOffset, 10 },
@@ -34,6 +36,7 @@ static const menu_definition_t MENU_DEFINITIONS[] PROGMEM = {
   { ST_MAXFANSPEED, menuMaxFanSpeed, 10 },
   { ST_LCDBACKLIGHT, menuLcdBacklight, 10},
   { ST_TOAST, menuToast, 20 },
+  { ST_ENG_PROBEDIAG, menuProbeDiag, 0 },
   { 0, 0 },
 };
 
@@ -58,6 +61,7 @@ const menu_transition_t MENU_TRANSITIONS[] PROGMEM = {
   { ST_SETPOINT, BUTTON_RIGHT, ST_MANUALMODE },
 
   { ST_MANUALMODE, BUTTON_LEFT | BUTTON_TIMEOUT, ST_HOME_FOOD1 },
+  { ST_MANUALMODE, BUTTON_LEFT | BUTTON_LONG, ST_ENG_PROBEDIAG },
   { ST_MANUALMODE, BUTTON_RIGHT, ST_LCDBACKLIGHT },
   
   { ST_LCDBACKLIGHT, BUTTON_LEFT | BUTTON_TIMEOUT, ST_HOME_FOOD1 },
@@ -103,25 +107,24 @@ const menu_transition_t MENU_TRANSITIONS[] PROGMEM = {
   { ST_RESETCONFIG, BUTTON_LEFT | BUTTON_TIMEOUT, ST_HOME_FOOD1 },
   { ST_RESETCONFIG, BUTTON_RIGHT, ST_SETPOINT },
 
+  { ST_ENG_PROBEDIAG, BUTTON_LEFT, ST_HOME_FOOD1 },
+
   { 0, 0, 0 },
 };
 
 // scratch space for edits
 int editInt;
 char editString[17];
+// Generic buffer for formatting floats
+static FloatPrint<8> fp;
 
 static button_t readButton(void)
 {
-  // Wait until reading stabilizes
-  if (analogReadRange(PIN_BUTTONS) > 4)
-    return BUTTON_NONE;
-
   unsigned char button = analogReadOver(PIN_BUTTONS, 8);
   if (button == 0)
     return BUTTON_NONE;
 
-  //Serial.print("BtnRaw ");
-  //Serial.println(button, DEC); 
+  //SerialX.print("HMLG,Btn="); SerialX.print(button, DEC); Serial_nl();
 
   if (button > 20 && button < 60)
     return BUTTON_LEFT;  
@@ -135,7 +138,7 @@ static button_t readButton(void)
   return BUTTON_NONE;
 }
 
-static void menuBooleanEdit(button_t button, const char PROGMEM *preamble)
+static void menuBooleanEdit(button_t button, const char *preamble)
 {
   if (button == BUTTON_UP || button == BUTTON_DOWN)
     editInt = !editInt;
@@ -147,7 +150,7 @@ static void menuBooleanEdit(button_t button, const char PROGMEM *preamble)
 }
 
 static void menuNumberEdit(button_t button, unsigned char increment,
-  int minVal, int maxVal, const char PROGMEM *format)
+  int minVal, int maxVal, const char *format)
 {
   char buffer[17];
 
@@ -274,11 +277,15 @@ static state_t menuHome(button_t button)
       return ST_HOME_AMB;
     else if (Menus.getState() == ST_HOME_AMB && !pid.Probes[TEMP_AMB]->hasTemperature())
       return ST_HOME_FOOD1;
-
-    updateDisplay();
+  }
+  else if (button == (BUTTON_LEFT | BUTTON_LONG))
+  {
+    // Long left press toggles between AUTO/MANUAL -> OFF and OFF -> AUTO
+    pid.setPidMode(pid.getPidMode() == PIDMODE_OFF ? PIDMODE_STARTUP : PIDMODE_OFF);
+    storePidMode();
   }
   // In manual fan mode Up is +5% Down is -5% and Left is -1%
-  else if (pid.getManualOutputMode())
+  else if (pid.isManualOutputMode())
   {
     char offset;
     if (button == BUTTON_UP)
@@ -291,15 +298,18 @@ static state_t menuHome(button_t button)
       return ST_AUTO;
 
     pid.setPidOutput(pid.getPidOutput() + offset);
-    updateDisplay();
-    return ST_NONE;
   }
-  else if (button == BUTTON_LEFT)
+  else if (button == BUTTON_LEFT && !pid.isDisabled())
   {
     // Left from Home screen enables/disables the lid countdown
     storeLidParam(LIDPARAM_ACTIVE, pid.LidOpenResumeCountdown == 0);
-    updateDisplay();
+    // Immediately show the Lid open/closed LED indicator and other changed statuses
+    publishLeds();
   }
+  
+  if (button != BUTTON_LEAVE)
+    updateDisplay();
+
   return ST_AUTO;
 }
 
@@ -318,7 +328,7 @@ static state_t menuSetpoint(button_t button)
       storeSetPoint(editInt);
   }
 
-  menuNumberEdit(button, 5, 0, 1000, PSTR("%3d"DEGREE"%c"));
+  menuNumberEdit(button, 5, 0, 1000, PSTR("%3d" DEGREE "%c"));
   return ST_AUTO;
 }
 
@@ -354,7 +364,7 @@ static state_t menuProbeOffset(button_t button)
   else if (button == BUTTON_LEAVE)
     storeAndReportProbeOffset(probeIndex, editInt);
 
-  menuNumberEdit(button, 1, -100, 100, PSTR("Offset %4d"DEGREE"%c"));
+  menuNumberEdit(button, 1, -100, 100, PSTR("Offset %4d" DEGREE "%c"));
   return ST_AUTO;
 }
 
@@ -395,14 +405,14 @@ static state_t menuManualMode(button_t button)
   if (button == BUTTON_ENTER)
   {
     lcdprint_P(PSTR("Manual fan mode"), true);
-    editInt = pid.getManualOutputMode();
+    editInt = pid.isManualOutputMode();
   }
   else if (button == BUTTON_LEAVE)
   {
     // Check to see if it is different because the setPoint 
     // field stores either the setPoint or manual mode
     boolean manual = (editInt != 0); 
-    if (manual != pid.getManualOutputMode())
+    if (manual != pid.isManualOutputMode())
       storeSetPoint(manual ? 0 : pid.getSetPoint());
   }
   menuBooleanEdit(button, NULL);
@@ -516,6 +526,59 @@ static state_t menuToast(button_t button)
   }
   // Timeout or button press returns you to the previous menu
   return Menus.getLastState();
+}
+
+static state_t menuProbeDiag(button_t button)
+{
+  if (button == BUTTON_ENTER)
+  {
+    // On first entry, set to first probe
+    if (Menus.getLastState() != ST_ENG_PROBEDIAG)
+      Menus.ProbeNum = TEMP_PIT;
+  }
+  else if (button == BUTTON_DOWN)
+  {
+    // Next Probe
+    Menus.ProbeNum = (Menus.ProbeNum + 1) % TEMP_COUNT;
+  }
+  else if (button == BUTTON_UP)
+  {
+    // Previous Probe
+    if (Menus.ProbeNum == 0)
+      Menus.ProbeNum = TEMP_COUNT - 1;
+    else
+      --Menus.ProbeNum;
+  }
+
+  if (button != BUTTON_LEAVE)
+  {
+    lcd.home();
+
+    // P1 ADC65535 99Nz - ProbeNum RawADCReading Noise
+    const TempProbe *probe = pid.Probes[Menus.ProbeNum];
+    snprintf_P(editString, sizeof(editString), PSTR("P%1u ADC%05u %02uNz"),
+      Menus.ProbeNum,
+      analogReadOver(probe->getPin(), 10 + TEMP_OVERSAMPLE_BITS),
+      analogReadRange(probe->getPin())
+    );
+    lcd.write(editString);
+
+    // Thermis 999.99oC - ProbeType Temp Units
+    lcd.setCursor(0, 1);
+    const char *ptype = (char *)pgm_read_word(&LCD_PROBETYPES[probe->getProbeType()]);
+    lcdprint_P(ptype, false);
+    lcd.write(' ');
+    if (probe->hasTemperature())
+    {
+      fp.print(lcd, probe->Temperature, 6, 2);
+      lcd.write(DEGREE);
+    }
+    else
+      lcdprint_P(PSTR("       "), false);
+    lcd.write(pid.getUnits());
+  }
+
+  return ST_AUTO;
 }
 
 void HmMenuSystem::displayToast(char *msg)

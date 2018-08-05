@@ -1,4 +1,4 @@
-// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+// HeaterMeter Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 #ifndef __HMCORE_H__
 #define __HMCORE_H__
 
@@ -32,21 +32,24 @@
 #define PIN_LCD_CLK      4  // 6
 #define PIN_LCD_BACKLGHT 5  // 11
 // #define PIN_ALARM        6  // 12 (tone_4khz.h)
-#define PIN_SOFTRESET    7  // 13 DataFlash SS on WiShield
+//#define PIN_SOFTRESET    7  // 13 DataFlash SS on WiShield, no longer used for reset
 //#define PIN_SERVO        8  // 14 LCD_DATA on < HM PCB v3.2 (grillpid_conf.h)
 #define PIN_WIRELESS_LED 9  // 15
+#if !defined(PIN_SPI_SS)
 #define PIN_SPI_SS      10  // 16
 #define PIN_SPI_MOSI    11  // 17 Can not be changed
 #define PIN_SPI_MISO    12  // 18 Can not be changed
 #define PIN_SPI_SCK     13  // 19 Can not be changed
+#endif
 
 void hmcoreSetup(void);
 void hmcoreLoop(void);
 
 void updateDisplay(void);
-void lcdprint_P(const char PROGMEM *p, const boolean doClear);
+void lcdprint_P(const char *p, const boolean doClear);
 
 void eepromLoadConfig(unsigned char forceDefault);
+void storePidMode();
 void storeSetPoint(int sp);
 void loadProbeName(unsigned char probeIndex);
 void storeAndReportProbeName(unsigned char probeIndex, const char *name);
@@ -58,6 +61,7 @@ void setLcdBacklight(unsigned char lcdBacklight);
 void storeLcdBacklight(unsigned char lcdBacklight);
 void reportLcdParameters(void);
 void Debug_begin(void);
+void publishLeds(void);
 #define Debug_end Serial_nl
 void silenceRingingAlarm(void);
 

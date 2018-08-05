@@ -1,4 +1,4 @@
-// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+// HeaterMeter Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 #include "ShiftRegLCD.h"
 #include <digitalWriteFast.h>
 #include "hmcore.h"
@@ -10,7 +10,7 @@
 #endif /* HEATERMETER_RFM12 */
 
 /* Disable the watchdog timer immediately after zero_reg is set */
-__attribute__((naked)) __attribute__((section(".init3")))
+__attribute__((naked)) __attribute__((section(".init3"))) __attribute__((used))
   void clearWdt(void)
 {
   MCUSR = 0;
@@ -18,11 +18,13 @@ __attribute__((naked)) __attribute__((section(".init3")))
   WDTCSR = 0;
 }
 
-int main(void)
+void setup()
 {
-  init();
   hmcoreSetup();
-  for (;;)
-    hmcoreLoop();
-  return 0;
 }
+
+void loop()
+{
+  hmcoreLoop();
+}
+

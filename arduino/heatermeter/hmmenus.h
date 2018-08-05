@@ -1,4 +1,4 @@
-// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+// HeaterMeter Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 #ifndef __HMMENUS_H__
 #define __HMMENUS_H__
 
@@ -9,8 +9,7 @@
 #define BUTTON_RIGHT (1<<1)
 #define BUTTON_UP    (1<<2)
 #define BUTTON_DOWN  (1<<3)
-#define BUTTON_4     (1<<4)
-#define BUTTON_ANY   (0x1f)
+#define BUTTON_ANY   (0x0f)
 
 enum HmMenuStates {
   ST_HOME_FOOD1 = (ST_VMAX+1), // ST_HOME_X must stay sequential and in order
@@ -34,8 +33,8 @@ enum HmMenuStates {
   ST_RESETCONFIG,
   ST_LCDBACKLIGHT,
   ST_MAXFANSPEED,
-  ST_NETWORK_INFO,
   ST_TOAST,
+  ST_ENG_PROBEDIAG,
 };
 
 class HmMenuSystem : public MenuSystem
@@ -48,6 +47,7 @@ public:
   void displayToast(char *msg);
   unsigned char *getToastLine0(void) { return &_toastMsg[0]; }
   unsigned char *getToastLine1(void) { return &_toastMsg[sizeof(_toastMsg)/2]; }
+  unsigned char ProbeNum;
 private:
   unsigned char _toastMsg[33];
 };

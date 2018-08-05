@@ -1,9 +1,9 @@
-# Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+# Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=linkmeter
-PKG_RELEASE:=13
+PKG_RELEASE:=14
 
 PKG_BUILD_PARALLEL:=1
 
@@ -12,7 +12,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/linkmeter
 	SECTION:=utils
 	CATEGORY:=Utilities
-	DEPENDS:=+rrdtool +luci-lib-lucid-http +libuci
+	DEPENDS:=+rrdtool +liblmfit-lua +libuci +luci-base +luci-lib-nixio +luci-lib-jsonc
 	TITLE:=LinkMeter BBQ Controller
 	URL:=http://github.com/CapnBry/HeaterMeter
 	MAINTAINER:=Bryan Mayland <capnbry@gmail.com>
@@ -25,7 +25,6 @@ endef
 define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
 	$(CP) src/* $(PKG_BUILD_DIR)/
-	$(CP) luasrc/* $(PKG_BUILD_DIR)/
 
 	mkdir -p $(PKG_BUILD_DIR)/jssrc
 	$(CP) jssrc/* $(PKG_BUILD_DIR)/jssrc
@@ -53,25 +52,14 @@ define Package/linkmeter/install
 	$(CP) $(PKG_BUILD_DIR)/jssrc/jquery-all.js $(1)/www/luci-static/resources/js
 
 	$(INSTALL_DIR) $(1)/usr/lib/lua
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/lmclient.lua $(1)/usr/lib/lua/
+	$(CP) ./luasrc/* $(1)/usr/lib/lua/
 
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/hmdude $(1)/usr/bin
 	$(LN) -sf ../../usr/lib/lua/lmclient.lua $(1)/usr/bin/lmclient
 	# uci-defaults is saved so it can be used again after config-restore
 	$(INSTALL_BIN) ./config/linkmeter.uci-defaults $(1)/usr/bin/
-	$(LN) -sf ../../usr/bin/linkmeter.uci-defaults $(1)/etc/uci-defaults/linkmeter
-
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/lucid
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/lucid/linkmeterd.lua $(1)/usr/lib/lua/luci/lucid/
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/lucid/linkmeter
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/lucid/linkmeter/* $(1)/usr/lib/lua/luci/lucid/linkmeter/
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller/linkmeter
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/controller/linkmeter/* $(1)/usr/lib/lua/luci/controller/linkmeter/
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/linkmeter
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/view/linkmeter/* $(1)/usr/lib/lua/luci/view/linkmeter/
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi/linkmeter
-	$(INSTALL_DATA) $(PKG_BUILD_DIR)/model/cbi/linkmeter/* $(1)/usr/lib/lua/luci/model/cbi/linkmeter/
+	$(LN) -sf ../../usr/bin/linkmeter.uci-defaults $(1)/etc/uci-defaults/90_linkmeter
 endef
 
 define Package/linkmeter/postinst
@@ -81,20 +69,14 @@ define Package/linkmeter/postinst
 	rm /etc/uci-defaults/linkmeter
 	rm -f /tmp/luci-indexcache
 	rm -f /tmp/luci-modulecache/*
-	/etc/init.d/lucid restart
 endef
 
 define Package/linkmeter/postrm
 #!/bin/sh
 	[ -n "$${IPKG_INSTROOT}" ] && exit
-
-	/etc/init.d/lucid stop
 	[ -f "/tmp/hm.rrd" ] && rm "/tmp/hm.rrd"
-	uci del lucid.lmserver
-	uci commit lucid
 	rm -f /tmp/luci-indexcache
 	rm -f /tmp/luci-modulecache/*
-	/etc/init.d/lucid start
 endef
 
 define Package/linkmeter/conffiles

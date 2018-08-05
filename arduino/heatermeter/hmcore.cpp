@@ -1,4 +1,4 @@
-// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+// HeaterMeter Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 #include "Arduino.h"
 #include "econfig.h"
 #include <avr/wdt.h>
@@ -45,8 +45,8 @@ static unsigned char g_HomeDisplayMode;
 static unsigned char g_LogPidInternals; // If non-zero then log PID interals
 unsigned char g_LcdBacklight; // 0-100
 
-#define config_store_byte(eeprom_field, src) { econfig_write_byte((uint8_t *)offsetof(__eeprom_data, eeprom_field), src); }
-#define config_store_word(eeprom_field, src) { econfig_write_word((uint16_t *)offsetof(__eeprom_data, eeprom_field), src); }
+#define config_store_byte(eeprom_field, src) { econfig_write_byte((void *)offsetof(__eeprom_data, eeprom_field), src); }
+#define config_store_word(eeprom_field, src) { econfig_write_word((void *)offsetof(__eeprom_data, eeprom_field), src); }
 
 #define EEPROM_MAGIC 0xf00e
 
@@ -56,7 +56,7 @@ static const struct __eeprom_data {
   unsigned char lidOpenOffset;
   unsigned int lidOpenDuration;
   float pidConstants[4]; // constants are stored Kb, Kp, Ki, Kd
-  boolean manualMode;
+  unsigned char pidMode;
   unsigned char lcdBacklight; // in PWM (max 100)
 #ifdef HEATERMETER_RFM12
   unsigned char rfMap[TEMP_COUNT];
@@ -81,7 +81,7 @@ static const struct __eeprom_data {
   6,    // lid open offset %
   240,  // lid open duration
   { 0.0f, 4.0f, 0.02f, 5.0f },  // PID constants
-  false, // manual mode
+  PIDMODE_STARTUP,  // PID mode
   50,   // lcd backlight (%)
 #ifdef HEATERMETER_RFM12
   { RFSOURCEID_ANY, RFSOURCEID_ANY, RFSOURCEID_ANY, RFSOURCEID_ANY },  // rfMap
@@ -114,10 +114,13 @@ static const struct  __eeprom_probe DEFAULT_PROBE_CONFIG PROGMEM = {
   0,  // unused1
   0,  // unused2
   {
-    2.4723753e-4,2.3402251e-4,1.3879768e-7  // Maverick ET-72/73
-    //5.36924e-4,1.91396e-4,6.60399e-8 // Maverick ET-732 (Honeywell R-T Curve 4)
+    //2.4723753e-4,2.3402251e-4,1.3879768e-7  // Maverick ET-72/73
+    //5.2668241e-4,2.0037400e-4,2.5703090e-8 // Maverick ET-732
     //8.98053228e-4,2.49263324e-4,2.04047542e-7 // Radio Shack 10k
     //1.14061e-3,2.32134e-4,9.63666e-8 // Vishay 10k NTCLE203E3103FB0
+    //7.2237825e-4,2.1630182e-4,9.2641029e-8 // EPCOS100k
+    //8.1129016e-4,2.1135575e-4,7.1761474e-8 // Semitec 104GT-2
+    7.3431401e-4,2.1574370e-4,9.5156860e-8 // ThermoWorks Pro-Series
     ,1.0e+4
   }
 };
@@ -166,35 +169,39 @@ static void storeProbeName(unsigned char probeIndex, const char *name)
 {
   unsigned char ofs = getProbeConfigOffset(probeIndex, offsetof( __eeprom_probe, name));
   if (ofs != 0)
-    econfig_write_block(name, (void *)ofs, PROBE_NAME_SIZE);
+    econfig_write_block(name, (void *)(uintptr_t)ofs, PROBE_NAME_SIZE);
 }
 
 void loadProbeName(unsigned char probeIndex)
 {
   unsigned char ofs = getProbeConfigOffset(probeIndex, offsetof( __eeprom_probe, name));
   if (ofs != 0)
-    econfig_read_block(editString, (void *)ofs, PROBE_NAME_SIZE);
+    econfig_read_block(editString, (void *)(uintptr_t)ofs, PROBE_NAME_SIZE);
+}
+
+void storePidMode()
+{
+  unsigned char mode = pid.getPidMode();
+  if (mode <= PIDMODE_AUTO_LAST)
+    mode = PIDMODE_STARTUP;
+  config_store_byte(pidMode, mode);
 }
 
 void storeSetPoint(int sp)
 {
   // If the setpoint is >0 that's an actual setpoint.  
   // 0 or less is a manual fan speed
-  boolean isManualMode;
   if (sp > 0)
   {
     config_store_word(setPoint, sp);
     pid.setSetPoint(sp);
-    
-    isManualMode = false;
   }
   else
   {
     pid.setPidOutput(-sp);
-    isManualMode = true;
   }
 
-  config_store_byte(manualMode, isManualMode);
+  storePidMode();
 }
 
 static void storePidUnits(char units)
@@ -210,7 +217,7 @@ static void storeProbeOffset(unsigned char probeIndex, int offset)
   if (ofs != 0)
   {
     pid.Probes[probeIndex]->Offset = offset;
-    econfig_write_byte((unsigned char *)ofs, offset);
+    econfig_write_byte((void *)(uintptr_t)ofs, offset);
   }  
 }
 
@@ -220,7 +227,7 @@ static void storeProbeType(unsigned char probeIndex, unsigned char probeType)
   if (ofs != 0)
   {
     pid.setProbeType(probeIndex, probeType);
-    econfig_write_byte((unsigned char *)ofs, probeType);
+    econfig_write_byte((void *)(uintptr_t)ofs, probeType);
   }
 }
 
@@ -359,7 +366,9 @@ static void toneEnable(boolean enable)
     if (tone_idx != 0xff)
       return;
     tone_last = 0;
-    tone_idx = tone_cnt - 1;
+    // Start the tone with the last element (the delay)
+    // rather than the first beep (cnt-2 vs cnt-1)
+    tone_idx = tone_cnt - 2;
   }
   else
   {
@@ -392,7 +401,7 @@ static void lcdPrintBigNum(float val)
   {
     if (uval != 0 || x >= 9)
     {
-      const char PROGMEM *numData = NUMS + ((uval % 10) * 6);
+      const char *numData = NUMS + ((uval % 10) * 6);
 
       x -= C_WIDTH;
       lcd.setCursor(x, 0);
@@ -470,15 +479,18 @@ void updateDisplay(void)
       pitTemp = pid.Probes[TEMP_CTRL]->Temperature;
     else
       pitTemp = 0;
-    if (!pid.getManualOutputMode() && !pid.Probes[TEMP_CTRL]->hasTemperature())
+    if (!pid.isManualOutputMode() && !pid.Probes[TEMP_CTRL]->hasTemperature())
       memcpy_P(buffer, LCD_LINE1_UNPLUGGED, sizeof(LCD_LINE1_UNPLUGGED));
+    else if (pid.isDisabled())
+      snprintf_P(buffer, sizeof(buffer), PSTR("Pit:%3d" DEGREE "%c  [Off]"),
+        pitTemp, pid.getUnits());
     else if (pid.LidOpenResumeCountdown > 0)
-      snprintf_P(buffer, sizeof(buffer), PSTR("Pit:%3d"DEGREE"%c Lid%3u"),
+      snprintf_P(buffer, sizeof(buffer), PSTR("Pit:%3d" DEGREE "%c Lid%3u"),
         pitTemp, pid.getUnits(), pid.LidOpenResumeCountdown);
     else
     {
       char c1,c2;
-      if (pid.getManualOutputMode())
+      if (pid.isManualOutputMode())
       {
         c1 = '^';  // LCD_ARROWUP
         c2 = '^';  // LCD_ARROWDN
@@ -488,7 +500,7 @@ void updateDisplay(void)
         c1 = '[';
         c2 = ']';
       }
-      snprintf_P(buffer, sizeof(buffer), PSTR("Pit:%3d"DEGREE"%c %c%3u%%%c"),
+      snprintf_P(buffer, sizeof(buffer), PSTR("Pit:%3d" DEGREE "%c %c%3u%%%c"),
         pitTemp, pid.getUnits(), c1, pid.getPidOutput(), c2);
     }
 
@@ -510,7 +522,7 @@ void updateDisplay(void)
     if (probeIndex < TEMP_COUNT && pid.Probes[probeIndex]->hasTemperature())
     {
       loadProbeName(probeIndex);
-      snprintf_P(buffer, sizeof(buffer), PSTR("%-12s%3d"DEGREE), editString,
+      snprintf_P(buffer, sizeof(buffer), PSTR("%-12s%3d" DEGREE), editString,
         (int)pid.Probes[probeIndex]->Temperature);
     }
     else
@@ -526,7 +538,7 @@ void updateDisplay(void)
   }
 }
 
-void lcdprint_P(const char PROGMEM *p, const boolean doClear)
+void lcdprint_P(const char *p, const boolean doClear)
 {
   if (doClear)
     lcd.clear();
@@ -625,7 +637,7 @@ static void storeProbeCoeff(unsigned char probeIndex, char *vals)
     {
       float *fDest = &pid.Probes[probeIndex]->Steinhart[idx];
       *fDest = atof(vals);
-      econfig_write_block(fDest, (void *)ofs, sizeof(float));
+      econfig_write_block(fDest, (void *)(uintptr_t)ofs, sizeof(float));
       while (*vals && *vals != ',')
         ++vals;
     }
@@ -638,8 +650,6 @@ static void storeProbeCoeff(unsigned char probeIndex, char *vals)
 
 static void reboot(void)
 {
-  // Once the pin goes low, the avr should reboot
-  digitalWriteFast(PIN_SOFTRESET, LOW);
   // Use the watchdog in case SOFTRESET isn't hooked up (e.g. HM4.0)
   // If hoping to program via Optiboot, this won't work if the WDT trigers the reboot
   cli();
@@ -873,7 +883,7 @@ static void storeAlarmLimits(unsigned char idx, int val)
   if (ofs != 0 && val != 0)
   {
     ofs += alarmIndex * sizeof(val);
-    econfig_write_block(&val, (void *)ofs, sizeof(val));
+    econfig_write_block(&val, (void *)(uintptr_t)ofs, sizeof(val));
   }
 }
 
@@ -977,8 +987,11 @@ static void handleCommandUrl(char *URL)
   unsigned char urlLen = strlen(URL);
   if (strncmp_P(URL, PSTR("set?sp="), 7) == 0) 
   {
-    storeSetPoint(atoi(URL + 7));
-    storePidUnits(URL[urlLen-1]);
+    // store the units first, in case of 'O' disabling the PID output
+    storePidUnits(URL[urlLen - 1]);
+    // prevent sending "C" or "F" which would setpoint(0)
+    if (*(URL+7) <= '9')
+      storeSetPoint(atoi(URL + 7));
   }
   else if (strncmp_P(URL, PSTR("set?lb="), 7) == 0)
   {
@@ -1166,8 +1179,7 @@ static void eepromLoadBaseConfig(unsigned char forceDefault)
   pid.LidOpenOffset = config.base.lidOpenOffset;
   pid.setLidOpenDuration(config.base.lidOpenDuration);
   memcpy(pid.Pid, config.base.pidConstants, sizeof(config.base.pidConstants));
-  if (config.base.manualMode)
-    pid.setPidOutput(0);
+  pid.setPidMode(config.base.pidMode);
   setLcdBacklight(config.base.lcdBacklight);
 #ifdef HEATERMETER_RFM12
   memcpy(rfMap, config.base.rfMap, sizeof(rfMap));
@@ -1202,7 +1214,7 @@ static void eepromLoadProbeConfig(unsigned char forceDefault)
   if (config.base.magic != EEPROM_MAGIC)
   {
     forceDefault = 1;
-    econfig_write_word((uint16_t *)(EEPROM_PROBE_START-sizeof(config.base.magic)), EEPROM_MAGIC);
+    econfig_write_word((void *)(EEPROM_PROBE_START-sizeof(config.base.magic)), EEPROM_MAGIC);
   }
     
   struct  __eeprom_probe *p;
@@ -1286,6 +1298,17 @@ void Debug_begin(void)
     print_P(PSTR("HMLG" CSV_DELIMITER));
 }
 
+void publishLeds(void)
+{
+  ledmanager.publish(LEDSTIMULUS_Off, LEDACTION_Off);
+  ledmanager.publish(LEDSTIMULUS_LidOpen, pid.isLidOpen());
+  ledmanager.publish(LEDSTIMULUS_FanOn, pid.isOutputActive());
+  ledmanager.publish(LEDSTIMULUS_FanMax, pid.isOutputMaxed());
+  ledmanager.publish(LEDSTIMULUS_PitTempReached, pid.isPitTempReached());
+  ledmanager.publish(LEDSTIMULUS_Startup, pid.getPidMode() == PIDMODE_STARTUP);
+  ledmanager.publish(LEDSTIMULUS_Recovery, pid.getPidMode() == PIDMODE_RECOVERY);
+}
+
 static void newTempsAvail(void)
 {
   static unsigned char pidCycleCount;
@@ -1309,13 +1332,7 @@ static void newTempsAvail(void)
   if ((pidCycleCount % 0x04) == 1)
     outputAdcStatus();
 
-  ledmanager.publish(LEDSTIMULUS_Off, LEDACTION_Off);
-  ledmanager.publish(LEDSTIMULUS_LidOpen, pid.isLidOpen());
-  ledmanager.publish(LEDSTIMULUS_FanOn, pid.isOutputActive());
-  ledmanager.publish(LEDSTIMULUS_FanMax, pid.isOutputMaxed());
-  ledmanager.publish(LEDSTIMULUS_PitTempReached, pid.isPitTempReached());
-  ledmanager.publish(LEDSTIMULUS_Startup, pid.getPitStartRecover() == PIDSTARTRECOVER_STARTUP);
-  ledmanager.publish(LEDSTIMULUS_Recovery, pid.getPitStartRecover() == PIDSTARTRECOVER_RECOVERY);
+  publishLeds();
 
 #ifdef HEATERMETER_RFM12
   rfmanager.sendUpdate(pid.getPidOutput());
@@ -1359,13 +1376,6 @@ void hmcoreSetup(void)
   // And other unused units
   power_twi_disable();
 
-  // Switch the pin mode first to INPUT with internal pullup
-  // to take it to 5V before setting the mode to OUTPUT. 
-  // If we reverse this, the pin will go OUTPUT,LOW and reboot.
-  // SoftReset and WiShield are mutually exlusive, but it is HIGH/OUTPUT too
-  digitalWriteFast(PIN_SOFTRESET, HIGH);
-  pinModeFast(PIN_SOFTRESET, OUTPUT);
-
   tone4khz_init();
 
   pid.Probes[TEMP_PIT] = &probe0;
@@ -1394,9 +1404,9 @@ void hmcoreLoop(void)
     ledmanager.publish(LEDSTIMULUS_RfReceive, LEDACTION_OneShot);
 #endif /* HEATERMETER_RFM12 */
 
-  Menus.doWork();
   if (pid.doWork())
     newTempsAvail();
+  Menus.doWork();
   tone_doWork();
   ledmanager.doWork();
 }

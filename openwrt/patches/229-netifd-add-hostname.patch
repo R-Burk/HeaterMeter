@@ -1,12 +1,12 @@
-Index: package/netifd/files/lib/netifd/proto/dhcp.sh
-===================================================================
---- package/netifd/files/lib/netifd/proto/dhcp.sh	(revision 36720)
-+++ package/netifd/files/lib/netifd/proto/dhcp.sh	(working copy)
-@@ -28,6 +28,7 @@
- 
- 	[ "$broadcast" = 1 ] && broadcast="-B" || broadcast=
- 	[ -n "$clientid" ] && clientid="-x 0x3d:${clientid//:/}" || clientid="-C"
-+	[ -z "$hostname" ] && hostname="$(uci_get system @system[0] hostname OpenWrt)"
+diff --git a/package/network/config/netifd/files/lib/netifd/proto/dhcp.sh b/package/network/config/netifd/files/lib/netifd/proto/dhcp.sh
+index ea02d68..634d33d 100755
+--- a/package/network/config/netifd/files/lib/netifd/proto/dhcp.sh
++++ b/package/network/config/netifd/files/lib/netifd/proto/dhcp.sh
+@@ -52,6 +52,7 @@ proto_dhcp_setup() {
+ 	[ "$delegate" = "0" ] && proto_export "IFACE6RD_DELEGATE=0"
+ 	# Request classless route option (see RFC 3442) by default
+ 	[ "$classlessroute" = "0" ] || append dhcpopts "-O 121"
++	[ -n "$hostname" ] || hostname=$(uci_get system @system[0] hostname)
  
  	proto_export "INTERFACE=$config"
  	proto_run_command "$config" udhcpc \

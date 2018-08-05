@@ -1,4 +1,4 @@
-// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+// HeaterMeter Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 #include "strings.h"
 #include "rfmanager.h"
 #include "hmcore.h"
@@ -49,7 +49,7 @@ void RFManager::init(unsigned char band)
 {
   if (!_initialized)
   {
-    rf12_initialize(band);
+    rf12_initialize(band, 0);
     _initialized = true;
   }
 }

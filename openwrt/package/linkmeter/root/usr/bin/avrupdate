@@ -8,10 +8,10 @@ platform_setup_DEFAULT() {
 }
 
 platform_setup_BCM2708() {
-  lsmod | grep spi_bcm2708 > /dev/null || {
+  lsmod | grep spi_bcm2835 > /dev/null || {
     echo Loading SPI modules...
     insmod spidev
-    insmod spi-bcm2708
+    insmod spi-bcm2835
     CNT=5
     while [ ! -c /dev/spidev0.0 -a $CNT -gt 0 ] ; do
       sleep 1
@@ -50,12 +50,23 @@ platform_setup_BCM2708() {
 }
             
 platform_setup() {
-  config_load lucid
-  config_get PLATFORM linkmeter platform "DEFAULT"
+  config_load linkmeter
+  config_get PLATFORM daemon platform "DEFAULT"
   
   echo LinkMeter platform is $PLATFORM
   eval "platform_setup_$PLATFORM" 2> /dev/null || \
     platform_setup_DEFAULT
+}
+
+platform_cleanup_DEFAULT() {
+  true
+}
+platform_cleanup_BCM2708() {
+  rmmod spi-bcm2835
+}
+platform_cleanup() {
+  eval "platform_cleanup_$PLATFORM" 2> /dev/null || \
+    platform_cleanup_DEFAULT
 }
 
 DCONTROL=1
@@ -81,7 +92,7 @@ done
 
 [ -z "$HEX" ] && HEX=$(eval echo \$$OPTIND)
 
-if [ "${HEX:0:7}" = "http://" ] ; then
+if [ "${HEX:0:4}" = "http" ] ; then
   wget -O/tmp/hm.hex $HEX 2>&1
   if [ $? -ne 0 ] ; then
     echo Download failed
@@ -115,6 +126,8 @@ if [ $EXITCODE -eq 0 ] ; then
     [ -n "$HEX" ] && echo No input file $HEX
   fi
 fi
+
+platform_cleanup
 
 [ $DCONTROL -ne 0 ] && {
   echo -n "Starting LinkMeter "

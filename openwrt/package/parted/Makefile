@@ -13,6 +13,7 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=parted
 PKG_VERSION:=3.1
 PKG_RELEASE:=1
+PKG_HASH:=5e9cc1f91eaf016e5033d85b9b893fd6d3ffaca532a48de1082df9b94225ca15
 
 PKG_INSTALL:=1
 
@@ -27,6 +28,7 @@ define Package/parted
 	SUBMENU:=disc
 	TITLE:=parted Partition editor
 	URL:=http://www.gnu.org/software/parted/
+	DEPENDS:=+libuuid +libblkid
 endef
 
 define Package/parted/description
