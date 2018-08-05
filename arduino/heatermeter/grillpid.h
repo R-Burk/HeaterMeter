@@ -1,4 +1,4 @@
-// HeaterMeter Copyright 2011 Bryan Mayland <bmayland@capnbry.net>
+// HeaterMeter Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 #ifndef __GRILLPID_H__
 #define __GRILLPID_H__
 
@@ -64,17 +64,17 @@ public:
 class TempProbe
 {
 private:
-  const unsigned char _pin; 
+  const unsigned char _pin;
   unsigned char _probeType;
   char _tempStatus;
   boolean _hasTempFilt;
-  
+
 public:
   TempProbe(const unsigned char pin);
 
   const unsigned char getPin(void) const { return _pin; }
 
-  /* Configuration */  
+  /* Configuration */
   // Probe Type
   unsigned char getProbeType(void) const { return _probeType; }
   void setProbeType(unsigned char probeType);
@@ -91,14 +91,16 @@ public:
   boolean hasTemperature(void) const { return _tempStatus == TSTATUS_OK; }
   char getTempStatus(void) const { return _tempStatus; }
   void setTemperatureC(float T);
-  // Temperature moving average 
+  // Temperature filter
   float TemperatureFilt;
   boolean hasTemperatureFilt(void) const { return _hasTempFilt; }
   // Convert ADC to Temperature
   void calcTemp(unsigned int _accumulator);
   // Perform once-per-period processing
   void processPeriod(void);
-  
+  // Output status to serial
+  void status(void) const; 
+
   ProbeAlarm Alarms;
 };
 
@@ -123,14 +125,19 @@ public:
 #define PIDFLAG_LINECANCEL_50 5
 #define PIDFLAG_LINECANCEL_60 6
 
-// pitStartRecover constants
-// STARTUP - Attempting to reach temperature for the first time
-// after a setpoint change
-#define PIDSTARTRECOVER_STARTUP  0
+// pidMode constants
+// STARTUP - Attempting to reach temperature for the first time after a setpoint change
+#define PIDMODE_STARTUP   0
 // RECOVERY - Is attempting to return to temperature after a lid event
-#define PIDSTARTRECOVER_RECOVERY 1
+#define PIDMODE_RECOVERY  1
 // NORMAL - Setpoint has been attained, normal operation
-#define PIDSTARTRECOVER_NORMAL   2
+#define PIDMODE_NORMAL    2
+// Anything less than or equal to AUTO_LAST is an automatic mode state
+#define PIDMODE_AUTO_LAST PIDMODE_NORMAL
+// MANUAL - Manual operation mode
+#define PIDMODE_MANUAL    3
+// OFF - Output, alarms, and lid detect disabled
+#define PIDMODE_OFF       4
 
 // oversampled analogRead from current freerunning ADC
 unsigned int analogReadOver(unsigned char pin, unsigned char bits);
@@ -140,6 +147,7 @@ unsigned char analogReadRange(unsigned char pin);
 // Is the pin using the 1.1V reference
 bool analogIsBandgapReference(unsigned char pin);
 void analogSetBandgapReference(unsigned char pin, bool enable);
+unsigned int analogGetBandgapScale(void);
 #endif /* GRILLPID_DYNAMIC_RANGE */
 
 class GrillPid
@@ -153,9 +161,8 @@ private:
   unsigned int  _pidOutput;
 #endif /* UPSCALAR */
   unsigned long _lastWorkMillis;
-  unsigned char _pitStartRecover;
+  unsigned char _pidMode;
   int _setPoint;
-  boolean _manualOutputMode;
   unsigned char _periodCounter;
   // Counter used for "long PWM" mode
   unsigned char _longPwmTmr;
@@ -188,7 +195,7 @@ private:
   unsigned char _servoStepTicks;
   // count of periods a servo write has been delayed
   unsigned char _servoHoldoff;
-  
+
   void calcPidOutput(void);
   void commitFanOutput(void);
   void commitServoOutput(void);
@@ -203,12 +210,12 @@ public:
 
   /* Configuration */
   int getSetPoint(void) const { return _setPoint; }
-  void setSetPoint(int value); 
+  void setSetPoint(int value);
   char getUnits(void) const { return _units; }
   void setUnits(char units);
   // The number of degrees the temperature drops before automatic lidopen mode
   unsigned char LidOpenOffset;
-  // The ammount of time to turn off the blower when the lid is open 
+  // The ammount of time to turn off the blower when the lid is open
   unsigned int getLidOpenDuration(void) const { return _lidOpenDuration; }
   void setLidOpenDuration(unsigned int value);
   // Number of effective bits of the ADC
@@ -229,6 +236,9 @@ public:
   void setFanMaxSpeed(unsigned char value) { _fanMaxSpeed = constrain(value, 0, 100); }
   unsigned char getFanMaxStartupSpeed(void) const { return _fanMaxStartupSpeed; }
   void setFanMaxStartupSpeed(unsigned char value) { _fanMaxStartupSpeed = constrain(value, 0, 100); }
+  unsigned char getFanCurrentMaxSpeed(void) const { return
+    (_pidMode == PIDMODE_STARTUP) ?  _fanMaxStartupSpeed : _fanMaxSpeed;
+  }
   // Active floor means "fan on above this PID output". Must be < 100!
   unsigned char getFanActiveFloor(void) const { return _fanActiveFloor; }
   void setFanActiveFloor(unsigned char value) { _fanActiveFloor = (value < 100) ? value : 0; }
@@ -254,7 +264,7 @@ public:
   // Collection of PIDFLAG_*
   void setOutputFlags(unsigned char value);
   unsigned char getOutputFlags(void) const { return _outputFlags; }
-  
+
   /* Runtime Data */
   // Current PID output in percent, setting this will turn on manual output mode
 #ifndef UPSCALAR
@@ -263,11 +273,16 @@ public:
   unsigned int getPidOutput() const { return _pidOutput; }
 #endif /* UPSCALAR */
   void setPidOutput(int value);
+  boolean isManualOutputMode(void) const { return _pidMode == PIDMODE_MANUAL; }
+  // Output completely enabled/disabled
+  boolean isDisabled(void) const { return _pidMode == PIDMODE_OFF; }
+  void setPidMode(unsigned char mode);
+  unsigned char getPidMode(void) const { return _pidMode; }
   // Current fan speed output in percent
   unsigned char getFanSpeed(void) const { return DNSCALE(_fanSpeed); };
   unsigned long getLastWorkMillis(void) const { return _lastWorkMillis; }
+  unsigned char getPidIMax(void) const { return isPitTempReached() ? 100 : _fanMaxStartupSpeed; }
 
-  boolean getManualOutputMode(void) const { return _manualOutputMode; }
   // PID output moving average
   float PidOutputAvg;
   // Seconds remaining in the lid open countdown
@@ -281,9 +296,8 @@ public:
   // true if fan is running at maximum speed or servo wide open
   boolean isOutputMaxed(void) const { return DNSCALE(_pidOutput) >= 100; }
   // true if temperature was >= setpoint since last set / lid event
-  boolean isPitTempReached(void) const { return _pitStartRecover == PIDSTARTRECOVER_NORMAL; }
-  unsigned char getPitStartRecover(void) const { return _pitStartRecover; }
-  
+  boolean isPitTempReached(void) const { return _pidMode == PIDMODE_NORMAL; }
+
   // Call this in loop()
   boolean doWork(void);
   void resetLidOpenResumeCountdown(void);

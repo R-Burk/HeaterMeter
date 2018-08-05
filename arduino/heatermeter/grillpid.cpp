@@ -1,3 +1,4 @@
+// HeaterMeter Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 // GrillPid uses TIMER1 COMPB vector, as well as modifies the waveform
 // generation mode of TIMER1. Blower output pin needs to be a hardware PWM pin.
 // Fan output is 489Hz phase-correct PWM
@@ -9,6 +10,7 @@
 
 #include "strings.h"
 #include "grillpid.h"
+#include "ad8495_lin.h"
 
 extern GrillPid pid;
 
@@ -27,18 +29,27 @@ ISR(TIMER1_CAPT_vect)
   if (nextStep != 0)
   {
     digitalWriteFast(PIN_SERVO, HIGH);
+    nextStep -= uSecToTicks(SERVO_BUSYWAIT);
     // Add the current timer1 count to offset the delay of calculating
     // the next move, and any interrupt latency due to the ADC code
     OCR1B = TCNT1 + nextStep;
   }
 }
 
-ISR(TIMER1_COMPB_vect, ISR_NAKED)
+ISR(TIMER1_COMPB_vect)
 {
+#if SERVO_BUSYWAIT > 0
+  // COMPB (OCR1B) is triggered SERVO_BUSYWAIT usec before the switch time
+  unsigned int target = OCR1B + uSecToTicks(SERVO_BUSYWAIT);
+  while (TCNT1 < target)
+    ;
+#endif
   digitalWriteFast(PIN_SERVO, LOW);
-  asm("reti\n");
 }
 #endif
+
+// ADC pin to poll between every other ADC read, with low oversampling
+#define ADC_INTERLEAVE_HIGHFREQ 0
 
 static struct tagAdcState
 {
@@ -49,6 +60,7 @@ static struct tagAdcState
   unsigned char thisHigh;  // High this period
   unsigned char thisLow;   // Low this period
   unsigned char pin;       // pin for which these readings were made
+  unsigned char pin_next;  // Nextnon-interleaved pin read
   unsigned long analogReads[NUM_ANALOG_INPUTS]; // Current values
   unsigned char analogRange[NUM_ANALOG_INPUTS]; // high-low on last period
 #if defined(GRILLPID_DYNAMIC_RANGE)
@@ -72,18 +84,31 @@ ISR(ADC_vect)
     // Actually do the calculations for the previous set of reads while in the
     // discard period of the next set of reads. Break the code up into chunks
     // of roughly the same number of clock cycles.
-    if (adcState.discard == 1)
+    if (adcState.discard == 2)
     {
       adcState.analogReads[adcState.pin] = adcState.accumulator;
       adcState.analogRange[adcState.pin] = adcState.thisHigh - adcState.thisLow;
     }
+    else if (adcState.discard == 1)
+    {
+      adcState.accumulator = 0;
+      adcState.thisHigh = 0;
+      adcState.thisLow = 0xff;
+      adcState.pin = ADMUX & 0x0f;
+    }
     else if (adcState.discard == 0)
     {
-      adcState.thisHigh = 0;
-      adcState.accumulator = 0;
-      adcState.thisLow = 0xff;
-      adcState.cnt = adcState.top;
-      adcState.pin = ADMUX & 0x0f;
+      if (adcState.pin == ADC_INTERLEAVE_HIGHFREQ)
+      {
+        adcState.cnt = 4;
+        adcState.pin_next = (adcState.pin_next + 1) % NUM_ANALOG_INPUTS;
+        // Notice this doesn't check if pin_next is ADC_INTERLEAVE_HIGHFREQ, which
+        // means ADC_INTERLEAVE_HIGHFREQ will be checked twice in a row each loop
+        // Not worth the extra code to make that not happen
+      }
+      else
+        adcState.cnt = adcState.top;
+
     }
     return;
   }
@@ -112,12 +137,17 @@ ISR(ADC_vect)
     {
       // Store only the last ADC value, giving the bandgap ~25ms to stabilize
       adcState.bandgapAdc = ADC;
+      // adcState.pin will be set to (0x4e & 0x0f) due to startup's bandgap measure + .discard code
+      adcState.pin = 0;
     }
 #endif // GRILLPID_DYNAMIC_RANGE
 
-    ++pin;
-    if (pin >= NUM_ANALOG_INPUTS)
-      pin = 0;
+    // If just read the interleaved pin, advance to the next pin
+    if (pin == ADC_INTERLEAVE_HIGHFREQ)
+      pin = adcState.pin_next;
+    else
+      pin = ADC_INTERLEAVE_HIGHFREQ;
+
 #if defined(GRILLPID_DYNAMIC_RANGE)
     unsigned char newref =
       adcState.useBandgapReference[pin] ? (INTERNAL << 6) : (DEFAULT << 6);
@@ -143,6 +173,11 @@ unsigned int analogReadOver(unsigned char pin, unsigned char bits)
   {
     a = adcState.analogReads[pin];
   }
+
+  // If requesting the interleave pin, scale down from reduced resolution
+  if (pin == ADC_INTERLEAVE_HIGHFREQ)
+    return a >> (12 - bits);
+
   // Scale up to 256 samples then divide by 2^4 for 14 bit oversample
   unsigned int retVal = a * 16 / adcState.top;
   return retVal >> (14 - bits);
@@ -163,6 +198,12 @@ void analogSetBandgapReference(unsigned char pin, bool enable)
 {
   adcState.useBandgapReference[pin] = enable;
 }
+
+unsigned int analogGetBandgapScale(void)
+{
+  return adcState.bandgapAdc;
+}
+
 #endif /* GRILLPID_DYNAMIC_RANGE */
 
 static void adcDump(void)
@@ -261,6 +302,8 @@ void TempProbe::setProbeType(unsigned char probeType)
 
 void TempProbe::calcTemp(unsigned int adcval)
 {
+  const float ADCmax = 1023 * pow(2, TEMP_OVERSAMPLE_BITS);
+
   // Units 'A' = ADC value
   if (pid.getUnits() == 'A')
   {
@@ -269,56 +312,56 @@ void TempProbe::calcTemp(unsigned int adcval)
     return;
   }
 
-  // Ignore probes within 1 LSB of max
-  if (adcval > 1022 * pow(2, TEMP_OVERSAMPLE_BITS) || adcval == 0)
-    _tempStatus = TSTATUS_NONE;
-  else
+  if (_probeType == PROBETYPE_TC_ANALOG)
   {
-    const float ADCmax = 1023 * pow(2, TEMP_OVERSAMPLE_BITS);
-
-    if (_probeType == PROBETYPE_TC_ANALOG)
-    {
-      float mvScale = Steinhart[3];
-      // Commented out because there's no "divide by zero" exception so
-      // just allow undefined results to save prog space
-      //if (mvScale == 0.0f)
-      //  mvScale = 1.0f;
-      // If scale is <100 it is assumed to be mV/C with a 3.3V reference
-      if (mvScale < 100.0f)
-        mvScale = 3300.0f / mvScale;
+    float mvScale = Steinhart[3];
+    // Commented out because there's no "divide by zero" exception so
+    // just allow undefined results to save prog space
+    //if (mvScale == 0.0f)
+    //  mvScale = 1.0f;
+    // If scale is <100 it is assumed to be mV/C with a 3.3V reference
+    if (mvScale < 100.0f)
+      mvScale = 3300.0f / mvScale;
 #if defined(GRILLPID_DYNAMIC_RANGE)
-      if (analogIsBandgapReference(_pin))
-      {
-        analogSetBandgapReference(_pin, adcval < (1000U * (unsigned char)pow(2, TEMP_OVERSAMPLE_BITS)));
-        mvScale /= 1023.0f / adcState.bandgapAdc;
-      }
-      else
-        analogSetBandgapReference(_pin, adcval < (300U * (unsigned char)pow(2, TEMP_OVERSAMPLE_BITS)));
-#endif
-      setTemperatureC(adcval / ADCmax * mvScale);
+    if (analogIsBandgapReference(_pin))
+    {
+      analogSetBandgapReference(_pin, adcval < (1000U * (unsigned char)pow(2, TEMP_OVERSAMPLE_BITS)));
+      mvScale /= 1023.0f / adcState.bandgapAdc;
     }
-    else {
-      float R, T;
-      // If you put the fixed resistor on the Vcc side of the thermistor, use the following
-      R = Steinhart[3] / ((ADCmax / (float)adcval) - 1.0f);
-      // If you put the thermistor on the Vcc side of the fixed resistor use the following
-      //R = Steinhart[3] * ADCmax / (float)Vout - Steinhart[3];
+    else
+      analogSetBandgapReference(_pin, adcval < (300U * (unsigned char)pow(2, TEMP_OVERSAMPLE_BITS)));
+#endif
+    setTemperatureC(
+      tcNonlinearCompensate(adcval / ADCmax * mvScale)
+    );
+    return;
+  }
 
-      // Units 'R' = resistance, unless this is the pit probe (which should spit out Celsius)
-      if (pid.getUnits() == 'R' && this != pid.Probes[TEMP_CTRL])
-      {
-        Temperature = R;
-        _tempStatus = TSTATUS_OK;
-        return;
-      };
+  // Ignore probes within 1 LSB of max. TC don't need this as their min/max
+  // values are rejected as outside limits in setTemperatureC()
+  if (adcval > 1022 * pow(2, TEMP_OVERSAMPLE_BITS) || adcval == 0)
+  {
+    _tempStatus = TSTATUS_NONE;
+    return;
+  }
 
-      // Compute degrees K
-      R = log(R);
-      T = 1.0f / ((Steinhart[2] * R * R + Steinhart[1]) * R + Steinhart[0]);
+  /* if PROBETYPE_INTERNAL */
+  float R, T;
+  R = Steinhart[3] / ((ADCmax / (float)adcval) - 1.0f);
 
-      setTemperatureC(T - 273.15f);
-    } /* if PROBETYPE_INTERNAL */
-  } /* if ADCval */
+  // Units 'R' = resistance, unless this is the pit probe (which should spit out Celsius)
+  if (pid.getUnits() == 'R' && this != pid.Probes[TEMP_CTRL])
+  {
+    Temperature = R;
+    _tempStatus = TSTATUS_OK;
+    return;
+  };
+
+  // Compute degrees K
+  R = log(R);
+  T = 1.0f / ((Steinhart[2] * R * R + Steinhart[1]) * R + Steinhart[0]);
+
+  setTemperatureC(T - 273.15f);
 }
 
 void TempProbe::processPeriod(void)
@@ -333,10 +376,15 @@ void TempProbe::processPeriod(void)
     }
     else
       calcExpMovingAverage(TEMPPROBE_LPF_ALPHA, &TemperatureFilt, Temperature);
-    Alarms.updateStatus(TemperatureFilt);
+    if (!pid.isDisabled())
+    {
+      Alarms.updateStatus(Temperature);
+      return;
+    }
   }
-  else
-    Alarms.silenceAll();
+
+  // !hasTemperature() || pid.getDisabled()
+  Alarms.silenceAll();
 }
 
 void TempProbe::setTemperatureC(float T)
@@ -355,6 +403,15 @@ void TempProbe::setTemperatureC(float T)
     Temperature += Offset;
     _tempStatus = TSTATUS_OK;
   }
+}
+
+void TempProbe::status(void) const
+{
+  if (hasTemperature())
+    SerialX.print(Temperature, 1);
+  else
+    Serial_char('U');
+  Serial_csv();
 }
 
 void GrillPid::init(void)
@@ -512,7 +569,7 @@ inline void GrillPid::calcPidOutput(void)
   _pidCurrent[PIDT] = currentTemp;
 
   // Continue calculating P & D so we don't have to recalc for a bumpless transfer
-  if (_manualOutputMode) 
+  if (isManualOutputMode()) 
     return;
   // If we're in lid open mode or manual mode, fan should be off
   if (isLidOpen() ) {
@@ -530,7 +587,7 @@ inline void GrillPid::calcPidOutput(void)
 
   // IIIII = fan speed percent per degree of accumulated error
   // anti-windup: Make sure we only adjust the I term while inside the proportional control range
-  if ((error > 0 && _pidOutput < UPSCALE(100)) || (error < 0 && _pidOutput > 0))
+  if ((error > 0 && _pidOutput < UPSCALE(getPidMax())) || (error < 0 && _pidOutput > 0))
   {
     _pidCurrent[PIDI] += Pid[PIDI] * (error * _pidPeriodRB);
     // I term can never be negative, because if curr = set, then P and D are 0, so I must be output
@@ -578,15 +635,9 @@ inline void GrillPid::commitFanOutput(void)
     _fanSpeed = 0;
   else
   {
-    unsigned char max;
-    if (_pitStartRecover == PIDSTARTRECOVER_STARTUP)
-      max = _fanMaxStartupSpeed;
-    else
-      max = _fanMaxSpeed;
-
     // _fanActiveFloor should be constrained to 0-99 to prevent a divide by 0
     unsigned char range = 100 - _fanActiveFloor;
-
+    unsigned char max = getFanCurrentMaxSpeed();
     _fanSpeed = (unsigned long)(_pidOutput - UPSCALE(_fanActiveFloor)) * max / range;
   }
 
@@ -622,7 +673,9 @@ unsigned int GrillPid::getServoStepNext(unsigned int curr)
   const unsigned int SERVO_HOLD_SECS = 2U;
 
   // Hold the servo for SERVO_HOLD_SECS seconds then turn off on the next period
-  if (_servoStepTicks >= (SERVO_HOLD_SECS * 1000000UL / SERVO_REFRESH))
+  // when the output is off (allow the damper to close before turning off)
+  if (_servoStepTicks >= (SERVO_HOLD_SECS * 1000000UL / SERVO_REFRESH)
+    && _pidMode == PIDMODE_OFF)
     return 0;
 
   // If at or close to target, snap to target
@@ -697,33 +750,42 @@ boolean GrillPid::isAnyFoodProbeActive(void) const
   
 void GrillPid::resetLidOpenResumeCountdown(void)
 {
+  setPidMode(PIDMODE_RECOVERY);
   LidOpenResumeCountdown = _lidOpenDuration;
-  _pitStartRecover = PIDSTARTRECOVER_RECOVERY;
 }
 
 void GrillPid::setSetPoint(int value)
 {
-  // I don't want a recovery mode for small changes in setpoint - RCB
-  if ( abs(value - _setPoint) > 20) {
-      _pitStartRecover = PIDSTARTRECOVER_STARTUP;
-  }
-  _setPoint = value;
   // Placeholder for implementing an advanced flag - RCB
   // if (ADVFLAG_BUMPLESS) then
   // this is a bumpless transfer from manual to pid - RCB
-  if ( _manualOutputMode ) {
+  if ( isManualOutputMode() ) {
     calcPidOutput();
     _pidCurrent[PIDI] = DNSCALE(_pidOutput) - _pidCurrent[PIDP] + _pidCurrent[PIDD];
   }
-  _manualOutputMode = false;
   LidOpenResumeCountdown = 0;
+  // I don't want a recovery mode for small changes in setpoint - RCB
+  if ( abs(value - _setPoint) > 20) {
+    setPidMode(PIDMODE_STARTUP);
+  }
+  else {
+    setPidMode(PIDMODE_NORMAL);
+  }
+    
+  _setPoint = value;
 }
 
 void GrillPid::setPidOutput(int value)
 {
-  _manualOutputMode = true;
+  setPidMode(PIDMODE_MANUAL);
   _pidOutput = constrain(value, 0, UPSCALE(100));
+}
+
+void GrillPid::setPidMode(unsigned char mode)
+{
+  _pidMode = mode;
   LidOpenResumeCountdown = 0;
+  _pidOutput = 0;
 }
 
 void GrillPid::setPidConstant(unsigned char idx, float value)
@@ -741,18 +803,19 @@ void GrillPid::setLidOpenDuration(unsigned int value)
 void GrillPid::status(void)
 {
 #if defined(GRILLPID_SERIAL_ENABLED)
-  SerialX.print(getSetPoint(), DEC);
+  if (isDisabled())
+    Serial_char('U');
+  else if (isManualOutputMode())
+    Serial_char('-');
+  else
+    SerialX.print(getSetPoint(), DEC);
   Serial_csv();
 
-  for (unsigned char i=0; i<TEMP_COUNT; ++i)
-  {
-    if (Probes[i]->hasTemperature())
-      // Change for 2 digits after decimal. Hopefully will help relay and peaks - RCB
-      SerialX.print(Probes[i]->Temperature, 2);  
-    else
-      Serial_char('U');
-    Serial_csv();
-  }
+  // Always output the control probe in the first slot, usually TEMP_PIT
+  Probes[TEMP_CTRL]->status();
+  // The rest of the probes go in order, and one may be a duplicate of TEMP_CTRL
+  for (unsigned char i = TEMP_FOOD1; i<TEMP_COUNT; ++i)
+    Probes[i]->status();
 
   SerialX.print(DNSCALE(getPidOutput()), DEC);
   Serial_csv();
@@ -792,7 +855,7 @@ boolean GrillPid::doWork(void)
   // calcPidOutput() will bail if it isn't supposed to be in control
   calcPidOutput();
   
-  if (!_manualOutputMode)
+  if (_pidMode <= PIDMODE_AUTO_LAST)
   {
     int tempDiff = _setPoint - (int)Probes[TEMP_CTRL]->Temperature;
     if ((tempDiff <= 0) &&
@@ -802,12 +865,12 @@ boolean GrillPid::doWork(void)
       // If we actually neded that sum to achieve temperature we'll rebuild it, and it
       // prevents bouncing around above the temperature when you first start up
 #if defined GRILLPID_CUTBACK
-      if (_pitStartRecover == PIDSTARTRECOVER_STARTUP)
+      if (_pidMode == PIDMODE_STARTUP)
       {
         _pidCurrent[PIDI] *= 0.5f;
       }
 #endif
-      _pitStartRecover = PIDSTARTRECOVER_NORMAL;
+      _pidMode = PIDMODE_NORMAL;
       LidOpenResumeCountdown = 0;
     }
     else if (LidOpenResumeCountdown != 0)
@@ -838,7 +901,7 @@ void GrillPid::pidStatus(void)
   TempProbe const* const pit = Probes[TEMP_CTRL];
   if (pit->hasTemperature())
   {
-    print_P(PSTR("HMPS"CSV_DELIMITER));
+    print_P(PSTR("HMPS" CSV_DELIMITER));
     for (unsigned char i=PIDT; i<=PIDD; ++i)
     {
       SerialX.print(_pidCurrent[i], 2);
@@ -860,6 +923,9 @@ void GrillPid::setUnits(char units)
     case 'F':
     case 'R':
       _units = units;
+      break;
+    case 'O': // Off
+      setPidMode(PIDMODE_OFF);
       break;
   }
 }

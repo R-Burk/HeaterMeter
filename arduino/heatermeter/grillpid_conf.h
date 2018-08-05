@@ -1,6 +1,6 @@
-// HeaterMeter Copyright 2013 Bryan Mayland <bmayland@capnbry.net>
 #ifndef __GRILLPID_CONF__
 #define __GRILLPID_CONF__
+// HeaterMeter Copyright 2016 Bryan Mayland <bmayland@capnbry.net>
 
 #define GRILLPID_CALC_TEMP
 #define GRILLPID_SERIAL_ENABLED
@@ -60,6 +60,9 @@
 // #define SERVO_MIN_THRESH       50
 // Max number of seconds to hold off a servo write due to being below threshold
 #define SERVO_MAX_HOLDOFF      10
+// Maximum number of usec to busy wait in the event handler to get more accurate
+// timing of the servo pulse length
+#define SERVO_BUSYWAIT         0
 
 #define PROBE_NAME_SIZE 13
 
